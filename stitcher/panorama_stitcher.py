@@ -20,6 +20,7 @@ from stitcher.image_io import load_images
 from stitcher.models import PairStats, StitchConfig, StitchingError, StitchReport
 
 logger = logging.getLogger("PanoramaStitcher")
+_OUT_OF_MEMORY = "Ran out of memory; try --max-image-dimension 2000 (or a smaller value)."
 
 
 def peak_memory_mb() -> Optional[float]:
@@ -45,6 +46,16 @@ class PanoramaStitcher:
 
     def stitch_with_report(self, input_folder: str) -> Tuple[np.ndarray, StitchReport]:
         """Like :meth:`stitch`, but also return a machine-readable :class:`StitchReport`."""
+        try:
+            return self._run(input_folder)
+        except MemoryError as exc:
+            raise StitchingError(_OUT_OF_MEMORY) from exc
+        except cv2.error as exc:
+            if exc.code == cv2.Error.StsNoMem:
+                raise StitchingError(_OUT_OF_MEMORY) from exc
+            raise
+
+    def _run(self, input_folder: str) -> Tuple[np.ndarray, StitchReport]:
         config = self.config
         cv2.setRNGSeed(config.seed)
         timings: Dict[str, float] = {}
@@ -89,12 +100,9 @@ class PanoramaStitcher:
                 canvas_size, translation = canvas_geometry(images, transforms, config)
             report.canvas_size = canvas_size
             report.canvas_megapixels = round(canvas_size[0] * canvas_size[1] / 1e6, 3)
-            try:
-                with stage("warp_blend"):
-                    warped = warp_images(images, transforms, translation, canvas_size, config)
-                    blended, coverage = blend_images(warped, canvas_size, config)
-            except MemoryError as exc:
-                raise StitchingError("Ran out of memory; try --max-image-dimension 2000.") from exc
+            with stage("warp_blend"):
+                warped = warp_images(images, transforms, translation, canvas_size, config)
+                blended, coverage = blend_images(warped, canvas_size, config)
             with stage("crop"):
                 panorama = crop_panorama(blended, coverage)
             report.output_size = (panorama.shape[1], panorama.shape[0])
