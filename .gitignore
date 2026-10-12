@@ -1,0 +1,11 @@
+__pycache__/
+.venv/
+venv/
+Stitch/
+Results/
+baseline/
+out/
+debug/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
