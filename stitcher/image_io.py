@@ -1,19 +1,22 @@
+"""Image discovery, natural-order sorting and loading."""
+
 from __future__ import annotations
 
 import logging
 import os
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 import cv2
 
-from models import ImageData, StitchConfig, StitchingError
+from stitcher.models import ImageData, StitchConfig, StitchingError
 
 logger = logging.getLogger("PanoramaStitcher")
 SUPPORTED_EXTENSIONS: Tuple[str, ...] = (".jpg", ".jpeg", ".png")
 
 
-def natural_sort_key(filename: str) -> List:
+def natural_sort_key(filename: str) -> List[Union[int, str]]:
+    """Sort key so that ``img2.jpg`` comes before ``img10.jpg``."""
     parts = re.split(r"(\d+)", filename)
     return [int(part) if part.isdigit() else part.lower() for part in parts]
 
