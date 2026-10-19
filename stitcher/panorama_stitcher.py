@@ -18,6 +18,7 @@ from stitcher.features import FeatureMatcher
 from stitcher.geometry import canvas_geometry, estimate_homographies, global_transforms
 from stitcher.image_io import load_images
 from stitcher.models import PairStats, StitchConfig, StitchingError, StitchReport
+from stitcher.projection import CylindricalProjection
 
 logger = logging.getLogger("PanoramaStitcher")
 _OUT_OF_MEMORY = "Ran out of memory; try --max-image-dimension 2000 (or a smaller value)."
@@ -93,15 +94,24 @@ class PanoramaStitcher:
             report.pairs = [
                 PairStats(p.index, p.matches, p.inliers, round(p.inlier_ratio, 4)) for p in pairs
             ]
-            transforms, reference = global_transforms([p.homography for p in pairs], len(images))
+            homographies = [p.homography for p in pairs]
+            with stage("canvas"):
+                if config.projection == "cylindrical":
+                    projection = CylindricalProjection(images, homographies, config)
+                    reference, canvas_size = projection.reference, projection.canvas_size
+                    report.focal_length = round(projection.focal, 2)
+                else:
+                    transforms, reference = global_transforms(homographies, len(images))
+                    canvas_size, translation = canvas_geometry(images, transforms, config)
             report.reference_index = reference
             logger.info("Reference image: [%d]", reference)
-            with stage("canvas"):
-                canvas_size, translation = canvas_geometry(images, transforms, config)
             report.canvas_size = canvas_size
             report.canvas_megapixels = round(canvas_size[0] * canvas_size[1] / 1e6, 3)
             with stage("warp_blend"):
-                warped = warp_images(images, transforms, translation, canvas_size, config)
+                if config.projection == "cylindrical":
+                    warped = projection.warp_images(images, config)
+                else:
+                    warped = warp_images(images, transforms, translation, canvas_size, config)
                 blended, coverage = blend_images(warped, canvas_size, config)
             with stage("crop"):
                 panorama = crop_panorama(blended, coverage)

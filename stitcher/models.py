@@ -11,6 +11,7 @@ import numpy as np
 
 BLEND_MODES: Tuple[str, ...] = ("feather",)
 DETECTORS: Tuple[str, ...] = ("SIFT", "ORB")
+PROJECTIONS: Tuple[str, ...] = ("cylindrical", "planar")
 
 
 class StitchingError(Exception):
@@ -26,6 +27,8 @@ class StitchConfig:
     min_matches: int = 10
     min_inliers: int = 15
     max_area_ratio: float = 10.0
+    projection: str = "cylindrical"
+    focal_length: float = 0.0
     blend_mode: str = "feather"
     feather_width: int = 50
     max_canvas_megapixels: float = 400.0
@@ -40,6 +43,8 @@ class StitchConfig:
             raise ValueError(f"Unknown feature detector '{self.feature_detector}'.")
         if self.blend_mode not in BLEND_MODES:
             raise ValueError(f"Unknown blend mode '{self.blend_mode}'; use one of {BLEND_MODES}.")
+        if self.projection not in PROJECTIONS:
+            raise ValueError(f"Unknown projection '{self.projection}'; use one of {PROJECTIONS}.")
         if self.max_area_ratio <= 1.0:
             raise ValueError("max_area_ratio must be greater than 1.")
 
@@ -72,6 +77,7 @@ class StitchReport:
     keypoints: List[int] = field(default_factory=list)
     pairs: List[PairStats] = field(default_factory=list)
     reference_index: int = 0
+    focal_length: Optional[float] = None  # pixels; cylindrical projection only
     canvas_size: Tuple[int, int] = (0, 0)  # (width, height)
     canvas_megapixels: float = 0.0
     output_size: Tuple[int, int] = (0, 0)  # (width, height) after cropping

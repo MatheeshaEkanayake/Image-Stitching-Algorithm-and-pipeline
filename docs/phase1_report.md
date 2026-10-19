@@ -74,3 +74,18 @@ The outputs were inspected visually and look like the baseline renders.
 - `ruff` and `pytest` were only run on Linux.
 - I deleted the stale `Stitch/` virtualenv directory (it contained no OpenCV or NumPy, was
   git-ignored and is referenced as a mess in the brief). The `.venv/` directory was left alone.
+
+## Follow-up: cylindrical projection (added after the Phase 1 report was written)
+
+The planar chain visibly distorted wide sets (Images/Rainier: a 517 px wide frame became a
+wedge about 3000 px wide). On request, a rotating-camera model was added as an option and made
+the default: `--projection cylindrical` (`stitcher/projection.py`). `--projection planar`
+reproduces the original behaviour, so the baseline comparison above should be repeated with
+`--projection planar`.
+
+Canvas sizes at `--max-image-dimension 1200`, planar vs cylindrical: boat 10283x3603 ->
+3340x971, cafe 4522x1454 -> 2503x798, class 4216x2357 -> 2183x958; Rainier 5592x2590 ->
+1100x771. `Images/PXL` renders (1427x1440). `Images/images` is still refused, now because
+its 16 frames span about 350 degrees and reach the cylinder seam. Not done: bundle adjustment,
+360-degree wrap, horizon straightening, exposure compensation. The estimated focal lengths
+were checked only on synthetic frames (within 8% of the true value) and by eye on the photos.

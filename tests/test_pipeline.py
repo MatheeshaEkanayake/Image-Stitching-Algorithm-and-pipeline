@@ -162,7 +162,8 @@ def test_coverage_mask_crop_keeps_dark_content():
 
 def test_end_to_end_with_report(frame_folder, frames_and_truth):
     _, scene_from_frame = frames_and_truth
-    panorama, report = PanoramaStitcher(StitchConfig()).stitch_with_report(frame_folder)
+    config = StitchConfig(projection="planar")
+    panorama, report = PanoramaStitcher(config).stitch_with_report(frame_folder)
     assert panorama.shape[1] > FRAME_W * 2
     assert report.reference_index == 2
     assert len(report.pairs) == 3
@@ -170,7 +171,7 @@ def test_end_to_end_with_report(frame_folder, frames_and_truth):
     expected_width = scene_from_frame[-1][0, 2] - scene_from_frame[0][0, 2] + FRAME_W
     assert abs(report.canvas_size[0] - expected_width) < 0.15 * expected_width
     # stitch() returns the same pixels
-    again = PanoramaStitcher(StitchConfig()).stitch(frame_folder)
+    again = PanoramaStitcher(config).stitch(frame_folder)
     assert np.array_equal(again, panorama)
 
 
@@ -179,8 +180,8 @@ def test_report_schema(frame_folder):
     data = json.loads(report.to_json())
     expected_keys = {
         "image_names", "image_sizes", "detector", "keypoints", "pairs", "reference_index",
-        "canvas_size", "canvas_megapixels", "output_size", "timings_s", "peak_memory_mb",
-        "config",
+        "focal_length", "canvas_size", "canvas_megapixels", "output_size", "timings_s",
+        "peak_memory_mb", "config",
     }
     assert set(data) == expected_keys
     assert data["image_names"] == ["frame1.png", "frame2.png", "frame3.png", "frame4.png"]
@@ -254,3 +255,36 @@ def test_seed_makes_runs_identical(frame_folder):
     assert np.array_equal(a, b)
 
 
+
+
+def test_cylindrical_focal_and_canvas_on_rotation_frames(rotation_folder):
+    config = StitchConfig()  # cylindrical is the default
+    panorama, report = PanoramaStitcher(config).stitch_with_report(rotation_folder)
+    from .conftest import ROT_FOCAL, ROT_STEP_DEG
+
+    assert abs(report.focal_length - ROT_FOCAL) / ROT_FOCAL < 0.08
+    half_fov = np.arctan(FRAME_W / 2 / ROT_FOCAL)
+    expected_width = ROT_FOCAL * (np.deg2rad(3 * ROT_STEP_DEG) + 2 * half_fov)
+    assert abs(report.canvas_size[0] - expected_width) / expected_width < 0.08
+    assert report.reference_index == 2
+    assert panorama.shape[0] > 0.8 * FRAME_H
+
+
+def test_cylindrical_beats_planar_on_wide_rotation(rotation_folder):
+    cyl = PanoramaStitcher(StitchConfig()).stitch_with_report(rotation_folder)[1]
+    planar = PanoramaStitcher(StitchConfig(projection="planar")).stitch_with_report(
+        rotation_folder
+    )[1]
+    assert cyl.canvas_megapixels < planar.canvas_megapixels
+
+
+def test_given_focal_is_used(rotation_folder):
+    _, report = PanoramaStitcher(StitchConfig(focal_length=620.0)).stitch_with_report(
+        rotation_folder
+    )
+    assert report.focal_length == 620.0
+
+
+def test_unknown_projection_rejected():
+    with pytest.raises(ValueError):
+        StitchConfig(projection="spherical")

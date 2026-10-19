@@ -53,6 +53,8 @@ print(report.to_json())
 | `--min-matches` | `10` | Minimum good matches per adjacent pair |
 | `--min-inliers` | `15` | Minimum RANSAC inliers per adjacent pair |
 | `--max-area-ratio` | `10.0` | Reject a pair homography that scales an image's area by more than this factor (or its inverse) |
+| `--projection {cylindrical,planar}` | `cylindrical` | `cylindrical` treats the photos as a rotating camera and removes the stretching of the planar chain; `planar` is the original homography chain (kept for baseline comparison and flat scenes) |
+| `--focal` | `0` (estimate) | Focal length in pixels for the cylindrical projection |
 | `--blend-mode` | `feather` | Blend mode (only `feather` exists) |
 | `--feather-width` | `50` | Feather ramp width in px (`0` = unclipped distance weighting) |
 | `--max-image-dimension` | `0` (off) | Downscale inputs so the longer side is at most this |
@@ -79,10 +81,12 @@ the config used.
 3. **Match** adjacent pairs only, with BFMatcher and the Lowe ratio test.
 4. **Estimate** a RANSAC homography per pair and validate it (inlier count, determinant, area
    ratio, convexity, corners with w > 0). Failures name the offending pair.
-5. **Chain** the homographies to the middle image (the reference).
-6. **Canvas**: project all corners, check they are finite and in front of the plane, check the
-   size cap, and compute the translation. This happens before any big allocation.
-7. **Warp and blend**: each image is warped into its own bounding box and feather-blended
+5. **Chain** to the middle image (the reference). Cylindrical (default): estimate the focal
+   length from the pair homographies, turn them into rotations and chain the rotations.
+   Planar: chain the homographies directly.
+6. **Canvas**: project all image borders (onto the cylinder, or onto the plane checking w > 0),
+   check the size cap, and compute the offset. This happens before any big allocation.
+7. **Warp and blend**: each image is resampled into its own bounding box and feather-blended
    (distance-transform weights) into the canvas, tracking a coverage mask.
 8. **Crop** to the bounding box of the coverage mask.
 
@@ -110,9 +114,13 @@ Images/                    sample input sets (ordered left to right)
 - **Parallax and moving objects ghost.** Feather blending averages overlapping pixels, so
   anything not on the plane/at the distance the homography assumes, and anything that moved
   between shots, shows as a double image (visible in `Images/cafe`).
-- **The planar model fails on wide rotating-camera sweeps.** Chaining planar homographies
-  stretches the outer images without bound. `Images/images` (16 frames) is refused with a
-  clear `StitchingError`; boat, cafe and class are visibly stretched at the ends.
+- **`--projection planar` fails on wide rotating-camera sweeps.** Chaining planar homographies
+  stretches the outer images without bound, so cylindrical is the default.
+- **Cylindrical assumes a camera rotating about its centre with one focal length.** The focal
+  length is estimated without bundle adjustment, so small errors accumulate over long sweeps
+  and the horizon can curve if the camera was tilted.
+- **No closed 360-degree panoramas.** `Images/images` (16 frames, about 350 degrees) is refused
+  with a clear `StitchingError` because it reaches the cylinder seam.
 - Adjacent pairs only: the images must be in order and each must overlap its neighbour.
 - No exposure compensation, so brightness steps can show at seams.
 - The output keeps the black wedges of the canvas inside its bounding box (no

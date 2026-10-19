@@ -59,3 +59,34 @@ def frame_folder(tmp_path_factory: pytest.TempPathFactory, frames_and_truth) -> 
     for index, frame in enumerate(frames_and_truth[0]):
         cv2.imwrite(os.path.join(str(folder), f"frame{index + 1}.png"), frame)
     return str(folder)
+
+
+ROT_FOCAL = 600.0
+ROT_STEP_DEG = 18.0
+
+
+def make_rotation_frames(count: int = 4) -> List[np.ndarray]:
+    """Pinhole views (known focal length) of a cylindrical scene from a camera panning in yaw."""
+    scene = make_scene(width=2000, height=700, seed=11)
+    scene_h, scene_w = scene.shape[:2]
+    xs, ys = np.meshgrid(np.arange(FRAME_W) - FRAME_W / 2, np.arange(FRAME_H) - FRAME_H / 2)
+    rays = np.stack([xs, ys, np.full_like(xs, ROT_FOCAL)], axis=-1).astype(np.float64)
+    frames = []
+    for k in range(count):
+        yaw = np.deg2rad((k - (count - 1) / 2) * ROT_STEP_DEG)
+        rot = np.array([[np.cos(yaw), 0, np.sin(yaw)], [0, 1, 0], [-np.sin(yaw), 0, np.cos(yaw)]])
+        world = rays @ rot.T
+        theta = np.arctan2(world[..., 0], world[..., 2])
+        height = world[..., 1] / np.hypot(world[..., 0], world[..., 2])
+        map_x = (ROT_FOCAL * theta + scene_w / 2).astype(np.float32)
+        map_y = (ROT_FOCAL * height + scene_h / 2).astype(np.float32)
+        frames.append(cv2.remap(scene, map_x, map_y, cv2.INTER_LINEAR))
+    return frames
+
+
+@pytest.fixture(scope="session")
+def rotation_folder(tmp_path_factory: pytest.TempPathFactory) -> str:
+    folder = tmp_path_factory.mktemp("rotation")
+    for index, frame in enumerate(make_rotation_frames()):
+        cv2.imwrite(os.path.join(str(folder), f"r{index + 1}.png"), frame)
+    return str(folder)

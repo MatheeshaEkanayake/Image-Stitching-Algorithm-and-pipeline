@@ -10,7 +10,7 @@ from typing import List, Optional
 
 import cv2
 
-from stitcher.models import BLEND_MODES, StitchConfig, StitchingError
+from stitcher.models import BLEND_MODES, PROJECTIONS, StitchConfig, StitchingError
 from stitcher.panorama_stitcher import PanoramaStitcher
 
 logger = logging.getLogger("PanoramaStitcher")
@@ -38,6 +38,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "than this factor (or its inverse).")
     parser.add_argument("--feather-width", type=int, default=defaults.feather_width,
                         help="Feather ramp width in pixels (0 = unclipped).")
+    parser.add_argument("--projection", choices=list(PROJECTIONS), default=defaults.projection,
+                        help="cylindrical (rotating camera, default) or planar homography chain.")
+    parser.add_argument("--focal", type=float, default=defaults.focal_length,
+                        help="Focal length in pixels for cylindrical projection (0 = estimate).")
     parser.add_argument("--blend-mode", choices=list(BLEND_MODES), default=defaults.blend_mode)
     parser.add_argument("--max-image-dimension", type=int, default=0,
                         help="Downscale inputs so the longer side is at most this (0 = off).")
@@ -73,6 +77,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             min_matches=args.min_matches,
             min_inliers=args.min_inliers,
             max_area_ratio=args.max_area_ratio,
+            projection=args.projection,
+            focal_length=args.focal,
             blend_mode=args.blend_mode,
             feather_width=args.feather_width,
             max_image_dimension=args.max_image_dimension,
