@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from stitcher.blending import WarpedImage
-from stitcher.geometry import global_transforms
+from stitcher.geometry import PairResult, global_transforms
 from stitcher.models import ImageData, StitchConfig, StitchingError
 
 logger = logging.getLogger("PanoramaStitcher")
@@ -81,15 +81,113 @@ def pairwise_rotations(
     return rotations
 
 
+def refine_cameras(
+    pairs: Sequence[PairResult],
+    rotations: Sequence[np.ndarray],
+    reference: int,
+    focal: float,
+    sizes: Sequence[Tuple[int, int]],
+    iterations: int = 40,
+    fix_focal: bool = False,
+) -> Tuple[List[np.ndarray], float]:
+    """Jointly refine all rotations and one shared focal length (bundle adjustment).
+
+    Minimises the pixel reprojection error of every RANSAC inlier between adjacent images
+    with Levenberg-Marquardt. ``rotations[i]`` maps camera i onto the reference camera.
+    ``fix_focal`` keeps the focal length constant. Returns the refined rotations and focal
+    length, or the inputs if refinement does not improve the error or drives the focal length
+    out of a plausible range.
+    """
+    count = len(rotations)
+    free = [i for i in range(count) if i != reference]
+    longest = float(max(max(s) for s in sizes))
+
+    def unpack(x: np.ndarray) -> Tuple[List[np.ndarray], float]:
+        rots = [np.eye(3) for _ in range(count)]
+        for slot, i in enumerate(free):
+            rots[i] = cv2.Rodrigues(x[1 + 3 * slot:4 + 3 * slot])[0]
+        return rots, float(np.exp(x[0]))
+
+    def residuals(x: np.ndarray) -> np.ndarray:
+        rots, f = unpack(x)
+        out = []
+        for pair in pairs:
+            i = pair.index
+            (wi, hi), (wj, hj) = sizes[i], sizes[i + 1]
+            src, dst = pair.points_src, pair.points_dst
+            rays = np.stack([(src[:, 0] - wj / 2) / f, (src[:, 1] - hj / 2) / f,
+                             np.ones(len(src))], axis=1) @ (rots[i].T @ rots[i + 1]).T
+            with np.errstate(divide="ignore", invalid="ignore"):
+                px = f * rays[:, 0] / rays[:, 2] + wi / 2
+                py = f * rays[:, 1] / rays[:, 2] + hi / 2
+            err = np.stack([px - dst[:, 0], py - dst[:, 1]], axis=1)
+            err[~np.isfinite(err) | (rays[:, 2:3] <= 0).repeat(2, axis=1)] = 1e3
+            out.append(err.ravel())
+        return np.concatenate(out)
+
+    x = np.zeros(1 + 3 * len(free))
+    x[0] = np.log(focal)
+    for slot, i in enumerate(free):
+        x[1 + 3 * slot:4 + 3 * slot] = cv2.Rodrigues(np.asarray(rotations[i]))[0].ravel()
+
+    def robust_cost(r: np.ndarray) -> float:
+        return float(np.sum(np.minimum(r * r, 25.0)))  # truncated quadratic, 5 px
+
+    r = residuals(x)
+    start_cost = cost = robust_cost(r)
+    start_med = float(np.median(np.abs(r)))
+    damping = 1e-3
+    for _ in range(iterations):
+        weights = np.where(np.abs(r) < 5.0, 1.0, 0.0)
+        jac = np.empty((len(r), len(x)))
+        for k in range(len(x)):
+            step = np.zeros_like(x)
+            step[k] = 1e-6
+            jac[:, k] = (residuals(x + step) - r) / 1e-6
+        if fix_focal:
+            jac[:, 0] = 0.0
+        jw = jac * weights[:, None]
+        normal = jw.T @ jac
+        gradient = jw.T @ r
+        improved = False
+        for _ in range(8):
+            try:
+                delta = np.linalg.solve(normal + damping * np.diag(np.diag(normal) + 1e-9),
+                                        -gradient)
+            except np.linalg.LinAlgError:
+                damping *= 10
+                continue
+            r_new = residuals(x + delta)
+            cost_new = robust_cost(r_new)
+            if cost_new < cost:
+                x, r, cost = x + delta, r_new, cost_new
+                damping = max(damping / 3, 1e-9)
+                improved = True
+                break
+            damping *= 4
+        if not improved or np.linalg.norm(delta) < 1e-9:
+            break
+    rots, f = unpack(x)
+    end_med = float(np.median(np.abs(r)))
+    if not (0.25 * longest <= f <= 8 * longest) or cost >= start_cost:
+        logger.warning("Bundle adjustment did not help (median error %.2f -> %.2f px); keeping "
+                       "the initial cameras.", start_med, end_med)
+        return list(rotations), focal
+    logger.info("Bundle adjustment: median error %.2f -> %.2f px, focal %.1f -> %.1f px",
+                start_med, end_med, focal, f)
+    return rots, f
+
+
 class CylindricalProjection:
     """Maps every image onto a cylinder of radius ``focal`` around the reference camera."""
 
     def __init__(
         self,
         images: List[ImageData],
-        homographies: Sequence[np.ndarray],
+        pairs: Sequence[PairResult],
         config: StitchConfig,
     ) -> None:
+        homographies = [p.homography for p in pairs]
         self.sizes = [(d.image.shape[1], d.image.shape[0]) for d in images]
         if config.focal_length > 0:
             self.focal = float(config.focal_length)
@@ -97,8 +195,14 @@ class CylindricalProjection:
             self.focal = estimate_focal(homographies, self.sizes)
         logger.info("Focal length: %.1f px (%s)", self.focal,
                     "given" if config.focal_length > 0 else "estimated")
-        pairs = pairwise_rotations(homographies, self.focal, self.sizes)
-        self.rotations, self.reference = global_transforms(pairs, len(images))
+        pair_rotations = pairwise_rotations(homographies, self.focal, self.sizes)
+        self.rotations, self.reference = global_transforms(pair_rotations, len(images))
+        if config.bundle_adjust:
+            self.rotations, refined = refine_cameras(
+                pairs, self.rotations, self.reference, self.focal, self.sizes,
+                fix_focal=config.focal_length > 0,
+            )
+            self.focal = refined
         self.offset = (0.0, 0.0)
         self.canvas_size = (0, 0)
         self._compute_canvas(config)

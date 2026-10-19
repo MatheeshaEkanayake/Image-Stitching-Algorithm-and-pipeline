@@ -13,7 +13,7 @@ from typing import Dict, Iterator, Optional, Tuple
 import cv2
 import numpy as np
 
-from stitcher.blending import blend_images, crop_panorama, warp_images
+from stitcher.blending import blend_images, blend_multiband, crop_panorama, warp_images
 from stitcher.features import FeatureMatcher
 from stitcher.geometry import canvas_geometry, estimate_homographies, global_transforms
 from stitcher.image_io import load_images
@@ -97,7 +97,7 @@ class PanoramaStitcher:
             homographies = [p.homography for p in pairs]
             with stage("canvas"):
                 if config.projection == "cylindrical":
-                    projection = CylindricalProjection(images, homographies, config)
+                    projection = CylindricalProjection(images, pairs, config)
                     reference, canvas_size = projection.reference, projection.canvas_size
                     report.focal_length = round(projection.focal, 2)
                 else:
@@ -112,7 +112,17 @@ class PanoramaStitcher:
                     warped = projection.warp_images(images, config)
                 else:
                     warped = warp_images(images, transforms, translation, canvas_size, config)
-                blended, coverage = blend_images(warped, canvas_size, config)
+                blend = blend_images
+                if config.blend_mode == "multiband":
+                    if report.canvas_megapixels <= config.multiband_max_megapixels:
+                        blend = blend_multiband
+                    else:
+                        logger.warning(
+                            "Canvas of %.1f MP is above the %.0f MP multiband limit; falling "
+                            "back to feather blending (use --max-image-dimension to shrink it).",
+                            report.canvas_megapixels, config.multiband_max_megapixels,
+                        )
+                blended, coverage = blend(warped, canvas_size, config)
             with stage("crop"):
                 panorama = crop_panorama(blended, coverage)
             report.output_size = (panorama.shape[1], panorama.shape[0])

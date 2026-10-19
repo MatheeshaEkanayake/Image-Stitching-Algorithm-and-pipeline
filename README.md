@@ -55,7 +55,7 @@ print(report.to_json())
 | `--max-area-ratio` | `10.0` | Reject a pair homography that scales an image's area by more than this factor (or its inverse) |
 | `--projection {cylindrical,planar}` | `cylindrical` | `cylindrical` treats the photos as a rotating camera and removes the stretching of the planar chain; `planar` is the original homography chain (kept for baseline comparison and flat scenes) |
 | `--focal` | `0` (estimate) | Focal length in pixels for the cylindrical projection |
-| `--blend-mode` | `feather` | Blend mode (only `feather` exists) |
+| `--blend-mode {multiband,feather}` | `multiband` | `multiband`: exposure compensation, graph-cut seams and Laplacian-pyramid blending (removes ghosting). `feather`: distance-weighted averaging. Canvases above 60 MP fall back to feather automatically |
 | `--feather-width` | `50` | Feather ramp width in px (`0` = unclipped distance weighting) |
 | `--max-image-dimension` | `0` (off) | Downscale inputs so the longer side is at most this |
 | `--max-canvas-mp` | `400` | Refuse canvases larger than this many megapixels |
@@ -82,12 +82,14 @@ the config used.
 4. **Estimate** a RANSAC homography per pair and validate it (inlier count, determinant, area
    ratio, convexity, corners with w > 0). Failures name the offending pair.
 5. **Chain** to the middle image (the reference). Cylindrical (default): estimate the focal
-   length from the pair homographies, turn them into rotations and chain the rotations.
+   length from the pair homographies, turn them into rotations, chain them, then refine all
+   rotations and one shared focal length jointly (bundle adjustment on the RANSAC inliers).
    Planar: chain the homographies directly.
 6. **Canvas**: project all image borders (onto the cylinder, or onto the plane checking w > 0),
    check the size cap, and compute the offset. This happens before any big allocation.
-7. **Warp and blend**: each image is resampled into its own bounding box and feather-blended
-   (distance-transform weights) into the canvas, tracking a coverage mask.
+7. **Warp and blend**: each image is resampled into its own bounding box. Multiband (default):
+   gain-block exposure compensation, graph-cut seams at low resolution, then pyramid blending.
+   Feather: distance-transform weights. Both track a coverage mask.
 8. **Crop** to the bounding box of the coverage mask.
 
 ## Layout
@@ -111,9 +113,12 @@ Images/                    sample input sets (ordered left to right)
 
 ## Known limitations
 
-- **Parallax and moving objects ghost.** Feather blending averages overlapping pixels, so
-  anything not on the plane/at the distance the homography assumes, and anything that moved
-  between shots, shows as a double image (visible in `Images/cafe`).
+- **Strong parallax can still show.** Multiband blending picks one image per pixel along a seam,
+  so moving people and most parallax no longer ghost, but a seam that must cross a misaligned
+  structure (for example the far skyline in `Images/boat`) can still show a break. With
+  `--blend-mode feather` moving objects and parallax double up.
+- **Multiband memory.** It holds all warped images and pyramids, so it is limited to canvases of
+  60 MP or less (then it falls back to feather); use `--max-image-dimension` for large photos.
 - **`--projection planar` fails on wide rotating-camera sweeps.** Chaining planar homographies
   stretches the outer images without bound, so cylindrical is the default.
 - **Cylindrical assumes a camera rotating about its centre with one focal length.** The focal

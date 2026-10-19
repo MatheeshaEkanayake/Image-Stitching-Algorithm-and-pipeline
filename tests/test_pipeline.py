@@ -176,7 +176,9 @@ def test_end_to_end_with_report(frame_folder, frames_and_truth):
 
 
 def test_report_schema(frame_folder):
-    _, report = PanoramaStitcher(StitchConfig(seed=3)).stitch_with_report(frame_folder)
+    _, report = PanoramaStitcher(StitchConfig(seed=3, projection="planar")).stitch_with_report(
+        frame_folder
+    )
     data = json.loads(report.to_json())
     expected_keys = {
         "image_names", "image_sizes", "detector", "keypoints", "pairs", "reference_index",
@@ -191,7 +193,7 @@ def test_report_schema(frame_folder):
     assert 0 < data["pairs"][0]["inlier_ratio"] <= 1
     stages = {"load", "detect", "match", "homography", "canvas", "warp_blend", "crop", "total"}
     assert stages <= set(data["timings_s"])
-    assert data["config"]["seed"] == 3 and data["config"]["blend_mode"] == "feather"
+    assert data["config"]["seed"] == 3 and data["config"]["blend_mode"] == "multiband"
     assert data["canvas_megapixels"] > 0
 
 
@@ -220,11 +222,11 @@ def test_cli_entry_points_and_failure_exit_code(frame_folder, tmp_path):
     assert missing.returncode == 1
 
 
-def test_multiband_is_no_longer_accepted(frame_folder, tmp_path):
+def test_unknown_blend_mode_rejected(frame_folder, tmp_path):
     with pytest.raises(SystemExit):
-        main([frame_folder, str(tmp_path / "x.jpg"), "--blend-mode", "multiband"])
+        main([frame_folder, str(tmp_path / "x.jpg"), "--blend-mode", "poisson"])
     with pytest.raises(ValueError):
-        StitchConfig(blend_mode="multiband")
+        StitchConfig(blend_mode="poisson")
 
 
 def test_unrelated_images_give_clear_pair_error(tmp_path):
@@ -288,3 +290,54 @@ def test_given_focal_is_used(rotation_folder):
 def test_unknown_projection_rejected():
     with pytest.raises(ValueError):
         StitchConfig(projection="spherical")
+
+
+def test_bundle_adjustment_reduces_reprojection_error(rotation_folder):
+    from stitcher.image_io import load_images
+    from stitcher.projection import CylindricalProjection
+
+    images = load_images(rotation_folder, StitchConfig())
+    config = StitchConfig()
+    matcher = FeatureMatcher(config)
+    matcher.detect(images)
+    pairs = estimate_homographies(images, matcher.match_adjacent(images), config)
+    refined = CylindricalProjection(images, pairs, config)
+    plain = CylindricalProjection(images, pairs, StitchConfig(bundle_adjust=False))
+    from .conftest import ROT_FOCAL
+
+    assert abs(refined.focal - ROT_FOCAL) <= abs(plain.focal - ROT_FOCAL) + 1.0
+    assert abs(refined.focal - ROT_FOCAL) / ROT_FOCAL < 0.03
+
+
+def test_multiband_blend_matches_coverage_and_has_no_double_image(rotation_folder):
+    multi = PanoramaStitcher(StitchConfig(blend_mode="multiband"))
+    feather = PanoramaStitcher(StitchConfig(blend_mode="feather"))
+    pano_m, rep_m = multi.stitch_with_report(rotation_folder)
+    pano_f, rep_f = feather.stitch_with_report(rotation_folder)
+    assert pano_m.shape == pano_f.shape
+    assert rep_m.canvas_size == rep_f.canvas_size
+    assert pano_m.dtype == np.uint8 and pano_m.std() > 10
+
+
+def test_multiband_falls_back_to_feather_on_huge_canvas(rotation_folder, caplog):
+    config = StitchConfig(multiband_max_megapixels=0.01)
+    with caplog.at_level("WARNING"):
+        pano, _ = PanoramaStitcher(config).stitch_with_report(rotation_folder)
+    assert "falling back to feather" in caplog.text
+    assert pano.size > 0
+
+
+def test_multiband_removes_moving_object_ghost():
+    """A bright blob present in only one of two overlapping images must not be half-blended."""
+    from stitcher.blending import WarpedImage, blend_multiband
+
+    base = np.full((120, 200, 3), 90, np.uint8)
+    left, right = base.copy(), base.copy()
+    cv2.circle(right, (60, 60), 12, (255, 255, 255), -1)  # in the overlap, right image only
+    mask = np.full((120, 200), 255, np.uint8)
+    warped = [WarpedImage(left, mask.copy(), (0, 0)), WarpedImage(right, mask.copy(), (100, 0))]
+    out, coverage = blend_multiband(iter(warped), (300, 120), StitchConfig())
+    assert coverage.all()
+    # Feather would leave a half-intensity ghost (~170) in the overlap; a seam gives ~90 or 255.
+    ghost = out[60, 160].mean()
+    assert ghost < 120 or ghost > 230

@@ -96,3 +96,59 @@ def crop_panorama(panorama: np.ndarray, coverage: np.ndarray) -> np.ndarray:
     if rows.size == 0:
         return panorama
     return panorama[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1]
+
+
+_SEAM_WORK_MEGAPIXELS = 0.2  # resolution the seam search runs at
+_BLEND_STRENGTH = 5.0  # multi-band overlap width, percent of sqrt(canvas area)
+
+
+def blend_multiband(
+    warped: Iterator[WarpedImage], canvas_size: Tuple[int, int], config: StitchConfig
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Exposure-compensate, find graph-cut seams and blend with a Laplacian pyramid.
+
+    Every pixel is taken (almost) entirely from one image, so moving objects and parallax no
+    longer double up; the pyramid hides the brightness step at the seam. Returns the uint8
+    panorama and the coverage mask, like :func:`blend_images`.
+    """
+    items = list(warped)
+    width, height = canvas_size
+    corners = [item.origin for item in items]
+    images = [item.image for item in items]
+    masks = [item.mask for item in items]
+
+    compensator = cv2.detail.ExposureCompensator_createDefault(
+        cv2.detail.ExposureCompensator_GAIN_BLOCKS
+    )
+    compensator.feed(corners, images, [cv2.UMat(m) for m in masks])
+    for index, (corner, image, mask) in enumerate(zip(corners, images, masks)):
+        compensator.apply(index, corner, image, mask)
+
+    scale = min(1.0, float(np.sqrt(_SEAM_WORK_MEGAPIXELS * 1e6 / (width * height))))
+    small_images = [
+        cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA).astype(np.float32)
+        for image in images
+    ]
+    small_masks = [
+        cv2.resize(mask, (si.shape[1], si.shape[0]), interpolation=cv2.INTER_NEAREST)
+        for mask, si in zip(masks, small_images)
+    ]
+    small_corners = [(int(round(x * scale)), int(round(y * scale))) for x, y in corners]
+    seam_masks = [cv2.UMat(m) for m in small_masks]
+    cv2.detail_GraphCutSeamFinder("COST_COLOR").find(small_images, small_corners, seam_masks)
+
+    bands = int(np.clip(np.ceil(np.log2(np.sqrt(width * height) * _BLEND_STRENGTH / 100)) - 1,
+                        1, 8))
+    blender = cv2.detail_MultiBandBlender(0, bands)
+    blender.prepare((0, 0, width, height))
+    coverage = np.zeros((height, width), dtype=np.uint8)
+    for corner, image, mask, seam in zip(corners, images, masks, seam_masks):
+        seam_full = cv2.resize(cv2.dilate(seam.get(), None), (mask.shape[1], mask.shape[0]),
+                               interpolation=cv2.INTER_LINEAR)
+        seam_full = cv2.bitwise_and(seam_full, mask)
+        blender.feed(image.astype(np.int16), seam_full, corner)
+        x0, y0 = corner
+        h, w = mask.shape
+        coverage[y0:y0 + h, x0:x0 + w][mask > 0] = 255
+    result, _ = blender.blend(None, None)
+    return np.clip(result, 0, 255).astype(np.uint8), coverage

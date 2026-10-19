@@ -89,3 +89,18 @@ Canvas sizes at `--max-image-dimension 1200`, planar vs cylindrical: boat 10283x
 its 16 frames span about 350 degrees and reach the cylinder seam. Not done: bundle adjustment,
 360-degree wrap, horizon straightening, exposure compensation. The estimated focal lengths
 were checked only on synthetic frames (within 8% of the true value) and by eye on the photos.
+
+## Follow-up: alignment and seams (bundle adjustment, multiband blending)
+
+- **Bundle adjustment** (`refine_cameras`): Levenberg-Marquardt over all rotations and one shared
+  focal length on the RANSAC inliers. Median reprojection error at `--max-image-dimension 1200`:
+  boat 8.6 -> 0.6 px, cafe 25.8 -> 0.9 px, class 10.5 -> 1.9 px, PXL 9.3 -> 1.1 px, Rainier
+  1.4 -> 0.2 px. The initial focal estimate was off by up to about 9% (cafe 1174 -> 1073 px).
+  It is skipped (with a warning) if it does not lower the robust error.
+- **Multiband blending** is now the default (`--blend-mode multiband`; `feather` is still
+  available): gain-block exposure compensation, graph-cut seams, Laplacian-pyramid blend (OpenCV
+  `cv2.detail`). Ghosting of moving people in class and the cafe table is gone in the renders.
+  Canvases above 60 MP fall back to feather with a warning.
+- Remaining: boat's right-hand join still shows a skyline break (parallax between the shots),
+  there is no 360-degree wrap, and the full-resolution boat canvas (381 MP) uses feather because
+  of the memory limit.

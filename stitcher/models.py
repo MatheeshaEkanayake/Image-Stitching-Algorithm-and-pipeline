@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-BLEND_MODES: Tuple[str, ...] = ("feather",)
+BLEND_MODES: Tuple[str, ...] = ("multiband", "feather")
 DETECTORS: Tuple[str, ...] = ("SIFT", "ORB")
 PROJECTIONS: Tuple[str, ...] = ("cylindrical", "planar")
 
@@ -29,7 +29,9 @@ class StitchConfig:
     max_area_ratio: float = 10.0
     projection: str = "cylindrical"
     focal_length: float = 0.0
-    blend_mode: str = "feather"
+    bundle_adjust: bool = True
+    blend_mode: str = "multiband"
+    multiband_max_megapixels: float = 60.0
     feather_width: int = 50
     max_canvas_megapixels: float = 400.0
     max_image_dimension: int = 0

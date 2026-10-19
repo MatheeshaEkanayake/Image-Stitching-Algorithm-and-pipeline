@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -28,6 +28,8 @@ class PairResult:
     homography: np.ndarray
     matches: int
     inliers: int
+    points_src: Optional[np.ndarray] = None  # (inliers, 2) pixels in image index + 1
+    points_dst: Optional[np.ndarray] = None  # (inliers, 2) matching pixels in image index
 
     @property
     def inlier_ratio(self) -> float:
@@ -134,7 +136,17 @@ def estimate_homographies(
         problem = validate_homography(homography, width, height, config)
         if problem:
             raise StitchingError(f"Implausible homography between {pair}: {problem}.")
-        results.append(PairResult(index, homography, len(matches), inliers))
+        keep = inlier_mask.ravel().astype(bool)
+        results.append(
+            PairResult(
+                index,
+                homography,
+                len(matches),
+                inliers,
+                points_src[keep].reshape(-1, 2).astype(np.float64),
+                points_dst[keep].reshape(-1, 2).astype(np.float64),
+            )
+        )
     return results
 
 
