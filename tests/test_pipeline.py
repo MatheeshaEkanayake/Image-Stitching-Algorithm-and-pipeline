@@ -359,7 +359,9 @@ def test_bundle_adjustment_recovers_pair_with_large_initial_error():
         in_i = world @ true[i]  # = (true[i].T @ world) for row vectors
         dst = np.stack([f * in_i[:, 0] / in_i[:, 2] + 320, f * in_i[:, 1] / in_i[:, 2] + 240], 1)
         pairs.append(PairResult(i, np.eye(3), 200, 200, pts, dst))
-    start = [cv2.Rodrigues(np.array([0.0, np.deg2rad(a), 0.0]))[0] for a in (-23, 0, 20)]
+    # camera 0 starts ~5 degrees off in pitch/yaw/roll, i.e. well beyond the final 5 px threshold
+    off = cv2.Rodrigues(np.deg2rad([5.0, 4.0, 3.0]))[0]
+    start = [off @ true[0], true[1], true[2]]
     refined, _ = refine_cameras(pairs, start, 1, f, sizes, fix_focal=True)
     error = np.degrees(np.linalg.norm(cv2.Rodrigues(refined[0] @ true[0].T)[0]))
     assert error < 0.1
