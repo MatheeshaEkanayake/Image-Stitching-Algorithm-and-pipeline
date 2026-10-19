@@ -84,34 +84,37 @@ matches/inliers/inlier ratio, reference index, canvas size and megapixels, outpu
 per-stage timings in seconds, peak memory in MB (process-wide peak RSS, `null` on Windows) and
 the config used.
 
-## Zoomable tiles and the server
+## Zoomable tiles, server and mobile app
 
 `--tiles DIR` writes a Deep Zoom style tile pyramid (JPEG tiles, 512 px by default, plus
 `manifest.json`) next to the normal output, so a viewer only downloads the tiles on screen.
 The lossless TIFF stays the master.
 
-```bash
-pip install -e ".[server]"
-STITCH_API_TOKEN=choose-a-secret python -m stitcher.server --host 0.0.0.0 --port 8000
-```
+The server (`pip install -e ".[server]"`, then `python -m stitcher.server --host 0.0.0.0`)
+adds accounts, per-photo uploads, a private library, sharing and a community. The React Native
+app in [`mobile/`](mobile/README.md) is its client.
 
 | Route | Purpose |
 |-------|---------|
-| `POST /jobs` | Multipart upload, field `files` (2-60 jpg/png, **in left-to-right order**), optional `max_image_dimension`, `projection`, `blend_mode`, `detector`, `tile_size`. Returns `202` and a job id |
-| `GET /jobs/{id}` | `state` is `queued`, `running`, `done` or `failed` (with `error`) |
-| `GET /jobs/{id}/view` | Zoomable viewer page (OpenSeadragon, works in a phone browser or WebView) |
-| `GET /jobs/{id}/manifest.json`, `/tiles/{level}/{col}_{row}.jpg` | Tile pyramid |
-| `GET /jobs/{id}/crop?x=&y=&w=&h=&scale=` | A region at native resolution as PNG (up to 16 MP) |
-| `GET /jobs/{id}/panorama.tif`, `/report.json` | Lossless master and run report |
-| `DELETE /jobs/{id}` | Remove a job and its files |
+| `POST /auth/register`, `/auth/login`, `/auth/logout`, `GET /auth/me` | Accounts (scrypt-hashed passwords, bearer session tokens, login throttling) |
+| `POST /captures` | Start a capture |
+| `POST /captures/{id}/photos` | Upload one photo (`index` = left-to-right position, `file`); re-sending an index replaces it |
+| `POST /captures/{id}/finish` | All photos uploaded: queue the stitch |
+| `GET /captures`, `GET /captures/{id}` | Your library; one capture with `state` (`capturing`, `queued`, `running`, `done`, `failed`) |
+| `PATCH /captures/{id}` | Rename or share (`{"public": true}`) |
+| `GET /captures/{id}/view` | Zoomable viewer page (token passed as `#token=` fragment) |
+| `GET /captures/{id}/manifest.json`, `/tiles/{level}/{col}_{row}.jpg`, `/thumb.jpg` | Tiles and thumbnail |
+| `GET /captures/{id}/crop?x=&y=&w=&h=&scale=` | A region at native resolution as PNG (up to 16 MP) |
+| `GET /captures/{id}/panorama.tif`, `/report.json` | Lossless master and run report |
+| `GET/POST /posts`, `GET/DELETE /posts/{id}`, `PUT/DELETE /posts/{id}/like` | Community feed and posts |
+| `GET/POST /posts/{id}/comments`, `DELETE /comments/{id}` | Comments |
+| `GET /users/{username}` | A user's shared panoramas and posts |
 
-Jobs are processed one at a time (a stitch needs gigabytes of RAM). Set `STITCH_API_TOKEN`
-and send it as `Authorization: Bearer <token>` or `?token=` (for browsers/WebViews); without
-it the server is open to anyone who can reach it. The server speaks plain HTTP: put it behind
-HTTPS (a reverse proxy) before exposing it beyond a trusted network. Finished jobs are kept
-until deleted; there is no automatic clean-up yet. Files are stored under `STITCH_DATA_DIR`
-(default `server_data/`). `openseadragon.min.js` is vendored from OpenSeadragon 4.1.1
-(BSD licence).
+Captures are private to their owner until shared (attaching one to a post shares it). Stitches
+run one at a time. Data lives under `STITCH_DATA_DIR` (default `server_data/`, SQLite database
+`app.db`). Set `STITCH_ALLOW_REGISTRATION=0` to close sign-ups. The server speaks plain HTTP:
+put it behind HTTPS before exposing it beyond a trusted network. There is no automatic clean-up
+of old captures yet. `openseadragon.min.js` is vendored from OpenSeadragon 4.1.1 (BSD licence).
 
 ## Pipeline
 
@@ -146,7 +149,8 @@ stitcher/
   panorama_stitcher.py     PanoramaStitcher orchestration and report
   projection.py            cylindrical model, focal estimation, bundle adjustment, warping
   tiles.py                 tile pyramid generator
-  server/                  FastAPI app, job runner, viewer page
+  server/                  FastAPI app (accounts, captures, community), job runner, viewer
+mobile/                    React Native (Expo) app
 tests/                     pytest suite on synthetic data (about 2 s)
 scripts/                   run_all_sets.sh, compare_to_baseline.py
 docs/                      baseline.md (original code), phase1_report.md
