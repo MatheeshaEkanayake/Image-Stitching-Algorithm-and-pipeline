@@ -23,11 +23,20 @@ Images are read in natural filename order (`img2.jpg` before `img10.jpg`), so na
 left to right.
 
 ```bash
-python stitch.py Images/boat Results/boat-panorama.jpg
+python stitch.py Images/boat Results/boat-panorama.tif        # lossless, recommended
+python stitch.py Images/boat Results/boat-panorama.jpg        # smaller but lossy
 python -m stitcher Images/boat Results/boat-panorama.jpg      # same thing
 python stitch.py Images/boat out/boat.jpg --max-image-dimension 1200 --report out/boat.json
 scripts/run_all_sets.sh --max-image-dimension 1200            # every set under Images/ -> out/
 ```
+
+## Keeping maximum detail
+
+- Leave `--max-image-dimension` at its default (`0`, no downscaling).
+- Write `.tif` (or `.png`): the output format is chosen by the file extension. JPEG is lossy
+  and is limited to 65535 px per side.
+- Resampling is bicubic, and multiband blending is used up to 40 MP canvases
+  (`--multiband-max-mp`); beyond that it falls back to feather blending.
 
 Large photos need a lot of memory (the canvas is held as float32 while blending); use
 `--max-image-dimension 1200` or `2000` on small machines.
@@ -55,9 +64,10 @@ print(report.to_json())
 | `--max-area-ratio` | `10.0` | Reject a pair homography that scales an image's area by more than this factor (or its inverse) |
 | `--projection {cylindrical,planar}` | `cylindrical` | `cylindrical` treats the photos as a rotating camera and removes the stretching of the planar chain; `planar` is the original homography chain (kept for baseline comparison and flat scenes) |
 | `--focal` | `0` (estimate) | Focal length in pixels for the cylindrical projection |
-| `--blend-mode {multiband,feather}` | `multiband` | `multiband`: exposure compensation, graph-cut seams and Laplacian-pyramid blending (removes ghosting). `feather`: distance-weighted averaging. Canvases above 20 MP fall back to feather automatically |
+| `--blend-mode {multiband,feather}` | `multiband` | `multiband`: exposure compensation, graph-cut seams and Laplacian-pyramid blending (removes ghosting). `feather`: distance-weighted averaging. Canvases above 40 MP fall back to feather automatically |
 | `--feather-width` | `50` | Feather ramp width in px (`0` = unclipped distance weighting) |
 | `--max-image-dimension` | `0` (off) | Downscale inputs so the longer side is at most this |
+| `--multiband-max-mp` | `40` | Canvases above this many megapixels fall back to feather blending |
 | `--max-canvas-mp` | `400` | Refuse canvases larger than this many megapixels |
 | `--seed` | `0` | Seed for OpenCV's RNG, for reproducible RANSAC |
 | `--report FILE` | off | Write a JSON run report |
@@ -88,7 +98,7 @@ the config used.
 6. **Canvas**: project all image borders (onto the cylinder, or onto the plane checking w > 0),
    check the size cap, and compute the offset. This happens before any big allocation.
 7. **Warp and blend**: each image is resampled into its own bounding box. Multiband (default):
-   gain-block exposure compensation, graph-cut seams at low resolution, then pyramid blending.
+   per-image gain exposure compensation, graph-cut seams at low resolution, then pyramid blending.
    Feather: distance-transform weights. Both track a coverage mask.
 8. **Crop** to the bounding box of the coverage mask.
 
@@ -117,8 +127,7 @@ Images/                    sample input sets (ordered left to right)
   so moving people and most parallax no longer ghost, but a seam that must cross a misaligned
   structure can still show a break (the run warns when a pair does not fit the rotating-camera
   model). With `--blend-mode feather` moving objects and parallax double up.
-- **Multiband memory.** It holds all warped images and pyramids, so it is limited to canvases of
-  20 MP or less (then it falls back to feather); use `--max-image-dimension` for large photos.
+- **Multiband memory.** It needs about 100 bytes per canvas pixel (29.5 MP full-resolution boat peaks at 2.9 GB), so canvases above 40 MP (`--multiband-max-mp`) fall back to feather; use `--max-image-dimension` for larger photos.
 - **`--projection planar` fails on wide rotating-camera sweeps.** Chaining planar homographies
   stretches the outer images without bound, so cylindrical is the default.
 - **Cylindrical assumes a camera rotating about its centre with one focal length.** The focal

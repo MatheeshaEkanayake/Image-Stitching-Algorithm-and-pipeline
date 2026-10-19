@@ -98,7 +98,7 @@ were checked only on synthetic frames (within 8% of the true value) and by eye o
   1.4 -> 0.2 px. The initial focal estimate was off by up to about 9% (cafe 1174 -> 1073 px).
   It is skipped (with a warning) if it does not lower the robust error.
 - **Multiband blending** is now the default (`--blend-mode multiband`; `feather` is still
-  available): gain-block exposure compensation, graph-cut seams, Laplacian-pyramid blend (OpenCV
+  available): per-image gain exposure compensation, graph-cut seams, Laplacian-pyramid blend (OpenCV
   `cv2.detail`). Ghosting of moving people in class and the cafe table is gone in the renders.
   Canvases above 20 MP fall back to feather with a warning.
 - Bug found afterwards: the first bundle adjustment used a fixed 5 px truncated loss, so pairs
@@ -109,3 +109,16 @@ were checked only on synthetic frames (within 8% of the true value) and by eye o
   A regression test covers it.
 - Remaining: there is no 360-degree wrap, and the full-resolution boat canvas (34 MP in cylindrical) uses feather because
   of the memory limit.
+
+## Follow-up: maximum detail (TIFF output, native resolution)
+
+- Output format follows the file extension; `.tif` (lossless) is now the recommended output and
+  the CLI logs a notice for JPEG. Resolution was never reduced by default (`--max-image-dimension 0`).
+- Found why multiband was so memory hungry: OpenCV's block-based exposure compensator
+  (`GAIN_BLOCKS`) took 59 s and 4.4 GB on a 7.8 MP canvas. Replaced by per-image gain
+  (`GAIN`): 0.2 s and no measurable extra memory. Native-resolution boat (29.5 MP canvas) now
+  runs with multiband blending in 21 s at 2.85 GB peak, so the multiband limit was raised from
+  20 to 40 MP (`--multiband-max-mp`).
+- Warp resampling changed from bilinear to bicubic. On boat at 2000 px the Laplacian variance of
+  the output rose from 117.6 to 170.3 (a rough sharpness measure; it also rewards edge
+  contrast/noise, so it is not a perceptual verdict).

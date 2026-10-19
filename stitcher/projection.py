@@ -23,6 +23,7 @@ logger = logging.getLogger("PanoramaStitcher")
 _EDGE_SAMPLES = 64
 _BAND_ROWS = 256
 _ROI_PAD = 2
+WARP_INTERPOLATION = cv2.INTER_CUBIC  # sharper than bilinear when resampling
 _ROBUST_SCALES = (300.0, 60.0, 15.0, 5.0)  # px; truncation thresholds for bundle adjustment
 _FINAL_SCALE = _ROBUST_SCALES[-1]
 
@@ -311,7 +312,7 @@ class CylindricalProjection:
                 map_x[~valid] = -1
                 map_y[~valid] = -1
                 warped[ya - y0:yb - y0] = cv2.remap(
-                    data.image, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT
+                    data.image, map_x, map_y, WARP_INTERPOLATION, borderMode=cv2.BORDER_CONSTANT
                 )
                 mask[ya - y0:yb - y0][valid] = 255
             if config.save_debug_images:

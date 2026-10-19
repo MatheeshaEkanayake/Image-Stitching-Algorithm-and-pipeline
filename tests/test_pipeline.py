@@ -107,7 +107,9 @@ def full_canvas_reference(images, transforms, translation, canvas_size, config):
     weights = np.zeros((height, width), np.float32)
     for index, data in enumerate(images):
         final = translation @ transforms[index]
-        warped = cv2.warpPerspective(data.image, final, (width, height))
+        warped = cv2.warpPerspective(
+            data.image, final, (width, height), flags=cv2.INTER_CUBIC
+        )
         mask = cv2.warpPerspective(
             np.full(data.image.shape[:2], 255, np.uint8), final, (width, height),
             flags=cv2.INTER_NEAREST,
@@ -365,3 +367,18 @@ def test_bundle_adjustment_recovers_pair_with_large_initial_error():
     refined, _ = refine_cameras(pairs, start, 1, f, sizes, fix_focal=True)
     error = np.degrees(np.linalg.norm(cv2.Rodrigues(refined[0] @ true[0].T)[0]))
     assert error < 0.1
+
+
+def test_cli_writes_lossless_tiff(frame_folder, tmp_path):
+    out = tmp_path / "pano.tif"
+    assert main([frame_folder, str(out), "--projection", "planar"]) == 0
+    loaded = cv2.imread(str(out), cv2.IMREAD_UNCHANGED)
+    assert loaded is not None and loaded.dtype == np.uint8 and loaded.shape[2] == 3
+    # re-saving the decoded image as TIFF must be bit-identical (lossless round trip)
+    again = tmp_path / "again.tif"
+    cv2.imwrite(str(again), loaded)
+    assert np.array_equal(cv2.imread(str(again), cv2.IMREAD_UNCHANGED), loaded)
+
+
+def test_default_multiband_limit_covers_native_resolution_sets():
+    assert StitchConfig().multiband_max_megapixels >= 40

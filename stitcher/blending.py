@@ -50,7 +50,7 @@ def warp_images(
         roi_size = (x1 - x0, y1 - y0)
         shift = np.array([[1, 0, -x0], [0, 1, -y0], [0, 0, 1]], dtype=np.float64)
         roi_transform = shift @ final_transform
-        warped = cv2.warpPerspective(data.image, roi_transform, roi_size)
+        warped = cv2.warpPerspective(data.image, roi_transform, roi_size, flags=cv2.INTER_CUBIC)
         source_mask = np.full((height, width), 255, dtype=np.uint8)
         mask = cv2.warpPerspective(source_mask, roi_transform, roi_size, flags=cv2.INTER_NEAREST)
         if config.save_debug_images:
@@ -118,7 +118,7 @@ def blend_multiband(
     masks = [item.mask for item in items]
 
     compensator = cv2.detail.ExposureCompensator_createDefault(
-        cv2.detail.ExposureCompensator_GAIN_BLOCKS
+        cv2.detail.ExposureCompensator_GAIN
     )
     compensator.feed(corners, images, [cv2.UMat(m) for m in masks])
     for index, (corner, image, mask) in enumerate(zip(corners, images, masks)):

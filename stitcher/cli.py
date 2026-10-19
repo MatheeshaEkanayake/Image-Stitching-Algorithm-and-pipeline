@@ -43,6 +43,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--focal", type=float, default=defaults.focal_length,
                         help="Focal length in pixels for cylindrical projection (0 = estimate).")
     parser.add_argument("--blend-mode", choices=list(BLEND_MODES), default=defaults.blend_mode)
+    parser.add_argument("--multiband-max-mp", type=float,
+                        default=defaults.multiband_max_megapixels,
+                        help="Canvases above this many megapixels fall back to feather blending "
+                             "(multiband needs more memory).")
     parser.add_argument("--max-image-dimension", type=int, default=0,
                         help="Downscale inputs so the longer side is at most this (0 = off).")
     parser.add_argument("--max-canvas-mp", type=float, default=defaults.max_canvas_megapixels,
@@ -80,6 +84,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             projection=args.projection,
             focal_length=args.focal,
             blend_mode=args.blend_mode,
+            multiband_max_megapixels=args.multiband_max_mp,
             feather_width=args.feather_width,
             max_image_dimension=args.max_image_dimension,
             max_canvas_megapixels=args.max_canvas_mp,
@@ -89,6 +94,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         panorama, report = PanoramaStitcher(config).stitch_with_report(args.input_folder)
         _ensure_parent_dir(args.output)
+        if args.output.lower().endswith((".jpg", ".jpeg")):
+            logger.info("JPEG output is lossy; use .tif or .png to keep full detail.")
         if not cv2.imwrite(args.output, panorama):
             raise StitchingError(f"Failed to write output image to '{args.output}'.")
         logger.info(
