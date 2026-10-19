@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Panorama viewer</title>
+<style>
+  :root { --bg: #111; --fg: #eee; --accent: #4da3ff; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+               font: 14px system-ui, sans-serif; }
+  #viewer { position: absolute; inset: 0; }
+  #bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; display: flex;
+         gap: 12px; align-items: center; padding: 8px 16px; background: rgba(0,0,0,.65); }
+  #bar a, #bar button { color: var(--accent); background: none; border: 0; font: inherit;
+                        cursor: pointer; text-decoration: underline; padding: 6px 0; }
+  #info { flex: 1; opacity: .85; }
+  #msg { position: absolute; inset: 0; display: grid; place-items: center; }
+</style>
+</head>
+<body>
+<div id="viewer"></div>
+<div id="bar"><span id="info">Loading…</span>
+  <button id="detail" type="button">Open this view at full resolution</button>
+  <a id="download" href="#">Download TIFF</a></div>
+<script src="/static/openseadragon.min.js"></script>
+<script>
+(function () {
+  var base = location.pathname.replace(/\/view\/?$/, '');
+  var token = new URLSearchParams(location.search).get('token');
+  var qs = token ? '?token=' + encodeURIComponent(token) : '';
+  document.getElementById('download').href = base + '/panorama.tif' + qs;
+
+  fetch(base + '/manifest.json' + qs).then(function (r) {
+    if (!r.ok) throw new Error('Panorama is not ready (' + r.status + ')');
+    return r.json();
+  }).then(function (m) {
+    var viewer = OpenSeadragon({
+      id: 'viewer', showNavigationControl: false, showNavigator: true,
+      navigatorPosition: 'TOP_RIGHT', gestureSettingsTouch: { pinchToZoom: true },
+      maxZoomPixelRatio: 4, constrainDuringPan: true, visibilityRatio: 0.5,
+      tileSources: {
+        width: m.width, height: m.height, tileSize: m.tile_size, tileOverlap: 0,
+        minLevel: m.min_level, maxLevel: m.max_level,
+        getTileUrl: function (level, x, y) {
+          return base + '/tiles/' + level + '/' + x + '_' + y + '.' + m.format + qs;
+        }
+      }
+    });
+    function region() {
+      var b = viewer.viewport.viewportToImageRectangle(viewer.viewport.getBounds(true));
+      var x = Math.max(0, Math.round(b.x)), y = Math.max(0, Math.round(b.y));
+      return { x: x, y: y, w: Math.min(m.width - x, Math.round(b.width)),
+               h: Math.min(m.height - y, Math.round(b.height)) };
+    }
+    viewer.addHandler('animation-finish', function () {
+      var r = region();
+      document.getElementById('info').textContent =
+        m.width + ' x ' + m.height + ' px  |  view ' + r.w + ' x ' + r.h + ' at (' + r.x + ', ' + r.y + ')';
+    });
+    document.getElementById('detail').addEventListener('click', function () {
+      var r = region();
+      // keep within the server's crop limit by scaling down only when needed
+      var scale = Math.min(1, Math.sqrt(16e6 / Math.max(1, r.w * r.h)));
+      var url = base + '/crop?x=' + r.x + '&y=' + r.y + '&w=' + r.w + '&h=' + r.h +
+                '&scale=' + scale.toFixed(3) + (token ? '&token=' + encodeURIComponent(token) : '');
+      window.open(url, '_blank');
+    });
+    var h = location.hash.match(/x=(\d+)&y=(\d+)&w=(\d+)&h=(\d+)/);
+    if (h) viewer.addOnceHandler('open', function () {
+      viewer.viewport.fitBounds(viewer.viewport.imageToViewportRectangle(+h[1], +h[2], +h[3], +h[4]), true);
+    });
+  }).catch(function (e) {
+    document.getElementById('info').textContent = e.message;
+  });
+})();
+</script>
+</body>
+</html>

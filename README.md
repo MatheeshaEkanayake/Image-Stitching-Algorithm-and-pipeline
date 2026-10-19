@@ -84,6 +84,35 @@ matches/inliers/inlier ratio, reference index, canvas size and megapixels, outpu
 per-stage timings in seconds, peak memory in MB (process-wide peak RSS, `null` on Windows) and
 the config used.
 
+## Zoomable tiles and the server
+
+`--tiles DIR` writes a Deep Zoom style tile pyramid (JPEG tiles, 512 px by default, plus
+`manifest.json`) next to the normal output, so a viewer only downloads the tiles on screen.
+The lossless TIFF stays the master.
+
+```bash
+pip install -e ".[server]"
+STITCH_API_TOKEN=choose-a-secret python -m stitcher.server --host 0.0.0.0 --port 8000
+```
+
+| Route | Purpose |
+|-------|---------|
+| `POST /jobs` | Multipart upload, field `files` (2-60 jpg/png, **in left-to-right order**), optional `max_image_dimension`, `projection`, `blend_mode`, `detector`, `tile_size`. Returns `202` and a job id |
+| `GET /jobs/{id}` | `state` is `queued`, `running`, `done` or `failed` (with `error`) |
+| `GET /jobs/{id}/view` | Zoomable viewer page (OpenSeadragon, works in a phone browser or WebView) |
+| `GET /jobs/{id}/manifest.json`, `/tiles/{level}/{col}_{row}.jpg` | Tile pyramid |
+| `GET /jobs/{id}/crop?x=&y=&w=&h=&scale=` | A region at native resolution as PNG (up to 16 MP) |
+| `GET /jobs/{id}/panorama.tif`, `/report.json` | Lossless master and run report |
+| `DELETE /jobs/{id}` | Remove a job and its files |
+
+Jobs are processed one at a time (a stitch needs gigabytes of RAM). Set `STITCH_API_TOKEN`
+and send it as `Authorization: Bearer <token>` or `?token=` (for browsers/WebViews); without
+it the server is open to anyone who can reach it. The server speaks plain HTTP: put it behind
+HTTPS (a reverse proxy) before exposing it beyond a trusted network. Finished jobs are kept
+until deleted; there is no automatic clean-up yet. Files are stored under `STITCH_DATA_DIR`
+(default `server_data/`). `openseadragon.min.js` is vendored from OpenSeadragon 4.1.1
+(BSD licence).
+
 ## Pipeline
 
 1. **Load** images in natural filename order (optional downscale).
@@ -115,6 +144,9 @@ stitcher/
   geometry.py              homography estimation/validation, chaining, canvas geometry
   blending.py              ROI warping, feather blending, coverage crop
   panorama_stitcher.py     PanoramaStitcher orchestration and report
+  projection.py            cylindrical model, focal estimation, bundle adjustment, warping
+  tiles.py                 tile pyramid generator
+  server/                  FastAPI app, job runner, viewer page
 tests/                     pytest suite on synthetic data (about 2 s)
 scripts/                   run_all_sets.sh, compare_to_baseline.py
 docs/                      baseline.md (original code), phase1_report.md

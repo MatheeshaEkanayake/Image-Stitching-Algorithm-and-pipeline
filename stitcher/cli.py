@@ -12,6 +12,7 @@ import cv2
 
 from stitcher.models import BLEND_MODES, PROJECTIONS, StitchConfig, StitchingError
 from stitcher.panorama_stitcher import PanoramaStitcher
+from stitcher.tiles import build_tile_pyramid
 
 logger = logging.getLogger("PanoramaStitcher")
 
@@ -53,6 +54,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Refuse canvases larger than this many megapixels.")
     parser.add_argument("--seed", type=int, default=defaults.seed,
                         help="Seed for OpenCV's random number generator (RANSAC).")
+    parser.add_argument("--tiles", metavar="DIR",
+                        help="Also write a zoomable tile pyramid (Deep Zoom levels) to DIR.")
+    parser.add_argument("--tile-size", type=int, default=512, help="Tile edge in pixels.")
     parser.add_argument("--report", metavar="FILE", help="Write a JSON run report to FILE.")
     parser.add_argument("--debug", action="store_true", help="Save match/warp debug images.")
     parser.add_argument("--debug-dir", default=defaults.debug_dir)
@@ -101,6 +105,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         logger.info(
             "Panorama saved to '%s' (%dx%d).", args.output, panorama.shape[1], panorama.shape[0]
         )
+        if args.tiles:
+            manifest = build_tile_pyramid(panorama, args.tiles, tile_size=args.tile_size)
+            logger.info("Wrote %d tiles (levels %d-%d) to '%s'.", manifest.tile_count,
+                        manifest.min_level, manifest.max_level, args.tiles)
         if args.report:
             _ensure_parent_dir(args.report)
             with open(args.report, "w", encoding="utf-8") as handle:

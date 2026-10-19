@@ -14,13 +14,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "ruff>=0.5"]
+server = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9"]
+dev = ["pytest>=7", "ruff>=0.5", "httpx>=0.27", "fastapi>=0.110", "python-multipart>=0.0.9", "uvicorn[standard]>=0.29"]
 
 [project.scripts]
 image-stitch = "stitcher.cli:main"
+image-stitch-server = "stitcher.server.__main__:main"
 
 [tool.setuptools]
-packages = ["stitcher"]
+packages = ["stitcher", "stitcher.server"]
+
+[tool.setuptools.package-data]
+"stitcher.server" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -9,3 +9,4 @@ debug/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+server_data/

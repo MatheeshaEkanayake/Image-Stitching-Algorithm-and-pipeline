@@ -122,3 +122,14 @@ were checked only on synthetic frames (within 8% of the true value) and by eye o
 - Warp resampling changed from bilinear to bicubic. On boat at 2000 px the Laplacian variance of
   the output rose from 117.6 to 170.3 (a rough sharpness measure; it also rewards edge
   contrast/noise, so it is not a perceptual verdict).
+
+## Follow-up: tiles and server (groundwork for the mobile app)
+
+Added `stitcher/tiles.py` (Deep Zoom numbering pyramid, `--tiles DIR`) and `stitcher/server/`
+(FastAPI: upload, queued background stitching, status, tiles, native-resolution crops, TIFF
+download, token auth, OpenSeadragon viewer page). Verified with 8 new tests (36 in total) and a
+real `uvicorn` run: boat uploaded with curl at `--max-image-dimension 2000` stitched to
+5547x1406, a tile and a 900x500 native crop came back correctly, and a request without the token
+got 401. Not verified: the viewer page in a real browser (its JavaScript was only served, not
+run); the server under concurrent load; anything over HTTPS. Not built: the mobile app and any
+search (objects, text, similarity) inside the panorama.
