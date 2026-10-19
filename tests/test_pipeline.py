@@ -341,3 +341,25 @@ def test_multiband_removes_moving_object_ghost():
     # Feather would leave a half-intensity ghost (~170) in the overlap; a seam gives ~90 or 255.
     ghost = out[60, 160].mean()
     assert ghost < 120 or ghost > 230
+
+
+def test_bundle_adjustment_recovers_pair_with_large_initial_error():
+    """A pair that starts ~70 px off must be pulled in, not given up on as an outlier."""
+    from stitcher.geometry import PairResult
+    from stitcher.projection import refine_cameras
+
+    rng = np.random.default_rng(1)
+    f, sizes = 800.0, [(640, 480)] * 3
+    true = [cv2.Rodrigues(np.array([0.0, np.deg2rad(a), 0.0]))[0] for a in (-20, 0, 20)]
+    pairs = []
+    for i in range(2):
+        pts = rng.uniform([0, 0], [640, 480], (200, 2))
+        rays = np.stack([(pts[:, 0] - 320) / f, (pts[:, 1] - 240) / f, np.ones(200)], 1)
+        world = rays @ true[i + 1].T  # points of image i+1 in the reference frame
+        in_i = world @ true[i]  # = (true[i].T @ world) for row vectors
+        dst = np.stack([f * in_i[:, 0] / in_i[:, 2] + 320, f * in_i[:, 1] / in_i[:, 2] + 240], 1)
+        pairs.append(PairResult(i, np.eye(3), 200, 200, pts, dst))
+    start = [cv2.Rodrigues(np.array([0.0, np.deg2rad(a), 0.0]))[0] for a in (-23, 0, 20)]
+    refined, _ = refine_cameras(pairs, start, 1, f, sizes, fix_focal=True)
+    error = np.degrees(np.linalg.norm(cv2.Rodrigues(refined[0] @ true[0].T)[0]))
+    assert error < 0.1

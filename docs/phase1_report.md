@@ -101,6 +101,11 @@ were checked only on synthetic frames (within 8% of the true value) and by eye o
   available): gain-block exposure compensation, graph-cut seams, Laplacian-pyramid blend (OpenCV
   `cv2.detail`). Ghosting of moving people in class and the cafe table is gone in the renders.
   Canvases above 20 MP fall back to feather with a warning.
-- Remaining: boat's right-hand join still shows a skyline break (parallax between the shots),
-  there is no 360-degree wrap, and the full-resolution boat canvas (34 MP in cylindrical) uses feather because
+- Bug found afterwards: the first bundle adjustment used a fixed 5 px truncated loss, so pairs
+  that started far off (boat pairs 3-4 and 4-5, about 90 px) got zero weight and were ignored,
+  which misplaced the right half of boat (shifted horizon, duplicated skyline). It now anneals
+  the truncation 300 -> 60 -> 15 -> 5 px and warns per pair if the final median error is above
+  5 px. Boat then fits with a median error of 0.37 px and renders with one continuous horizon.
+  A regression test covers it.
+- Remaining: there is no 360-degree wrap, and the full-resolution boat canvas (34 MP in cylindrical) uses feather because
   of the memory limit.

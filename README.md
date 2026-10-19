@@ -115,8 +115,8 @@ Images/                    sample input sets (ordered left to right)
 
 - **Strong parallax can still show.** Multiband blending picks one image per pixel along a seam,
   so moving people and most parallax no longer ghost, but a seam that must cross a misaligned
-  structure (for example the far skyline in `Images/boat`) can still show a break. With
-  `--blend-mode feather` moving objects and parallax double up.
+  structure can still show a break (the run warns when a pair does not fit the rotating-camera
+  model). With `--blend-mode feather` moving objects and parallax double up.
 - **Multiband memory.** It holds all warped images and pyramids, so it is limited to canvases of
   20 MP or less (then it falls back to feather); use `--max-image-dimension` for large photos.
 - **`--projection planar` fails on wide rotating-camera sweeps.** Chaining planar homographies

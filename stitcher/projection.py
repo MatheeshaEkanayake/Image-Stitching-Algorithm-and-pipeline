@@ -23,6 +23,8 @@ logger = logging.getLogger("PanoramaStitcher")
 _EDGE_SAMPLES = 64
 _BAND_ROWS = 256
 _ROI_PAD = 2
+_ROBUST_SCALES = (300.0, 60.0, 15.0, 5.0)  # px; truncation thresholds for bundle adjustment
+_FINAL_SCALE = _ROBUST_SCALES[-1]
 
 
 def _intrinsics(f: float, width: int, height: int) -> np.ndarray:
@@ -130,51 +132,68 @@ def refine_cameras(
     for slot, i in enumerate(free):
         x[1 + 3 * slot:4 + 3 * slot] = cv2.Rodrigues(np.asarray(rotations[i]))[0].ravel()
 
-    def robust_cost(r: np.ndarray) -> float:
-        return float(np.sum(np.minimum(r * r, 25.0)))  # truncated quadratic, 5 px
+    def robust_cost(r: np.ndarray, scale: float) -> float:
+        return float(np.sum(np.minimum(r * r, scale * scale)))  # truncated quadratic
 
     r = residuals(x)
-    start_cost = cost = robust_cost(r)
+    start_cost = robust_cost(r, _FINAL_SCALE)
     start_med = float(np.median(np.abs(r)))
-    damping = 1e-3
-    for _ in range(iterations):
-        weights = np.where(np.abs(r) < 5.0, 1.0, 0.0)
-        jac = np.empty((len(r), len(x)))
-        for k in range(len(x)):
-            step = np.zeros_like(x)
-            step[k] = 1e-6
-            jac[:, k] = (residuals(x + step) - r) / 1e-6
-        if fix_focal:
-            jac[:, 0] = 0.0
-        jw = jac * weights[:, None]
-        normal = jw.T @ jac
-        gradient = jw.T @ r
-        improved = False
-        for _ in range(8):
-            try:
-                delta = np.linalg.solve(normal + damping * np.diag(np.diag(normal) + 1e-9),
-                                        -gradient)
-            except np.linalg.LinAlgError:
-                damping *= 10
-                continue
-            r_new = residuals(x + delta)
-            cost_new = robust_cost(r_new)
-            if cost_new < cost:
-                x, r, cost = x + delta, r_new, cost_new
-                damping = max(damping / 3, 1e-9)
-                improved = True
+    # Graduated truncation: a tight threshold from the start would give zero weight to every
+    # pair whose initial guess is already off by more than the threshold, so the optimiser
+    # would silently ignore it. Start wide and tighten.
+    for scale in _ROBUST_SCALES:
+        cost, damping = robust_cost(r, scale), 1e-3
+        for _ in range(iterations):
+            weights = np.where(np.abs(r) < scale, 1.0, 0.0)
+            jac = np.empty((len(r), len(x)))
+            for k in range(len(x)):
+                step = np.zeros_like(x)
+                step[k] = 1e-6
+                jac[:, k] = (residuals(x + step) - r) / 1e-6
+            if fix_focal:
+                jac[:, 0] = 0.0
+            jw = jac * weights[:, None]
+            normal = jw.T @ jac
+            gradient = jw.T @ r
+            improved = False
+            for _ in range(8):
+                try:
+                    delta = np.linalg.solve(
+                        normal + damping * np.diag(np.diag(normal) + 1e-9), -gradient
+                    )
+                except np.linalg.LinAlgError:
+                    damping *= 10
+                    continue
+                r_new = residuals(x + delta)
+                cost_new = robust_cost(r_new, scale)
+                if cost_new < cost:
+                    x, r, cost = x + delta, r_new, cost_new
+                    damping = max(damping / 3, 1e-9)
+                    improved = True
+                    break
+                damping *= 4
+            if not improved or np.linalg.norm(delta) < 1e-9:
                 break
-            damping *= 4
-        if not improved or np.linalg.norm(delta) < 1e-9:
-            break
     rots, f = unpack(x)
     end_med = float(np.median(np.abs(r)))
-    if not (0.25 * longest <= f <= 8 * longest) or cost >= start_cost:
+    if not (0.25 * longest <= f <= 8 * longest) or robust_cost(r, _FINAL_SCALE) >= start_cost:
         logger.warning("Bundle adjustment did not help (median error %.2f -> %.2f px); keeping "
                        "the initial cameras.", start_med, end_med)
         return list(rotations), focal
     logger.info("Bundle adjustment: median error %.2f -> %.2f px, focal %.1f -> %.1f px",
                 start_med, end_med, focal, f)
+    offset = 0
+    for pair in pairs:
+        count = 2 * len(pair.points_src)
+        pair_med = float(np.median(np.abs(r[offset:offset + count])))
+        offset += count
+        if pair_med > 5.0:
+            logger.warning(
+                "Images %d and %d do not fit a rotating-camera model (median error %.1f px "
+                "after adjustment); expect a visible misalignment there, usually caused by "
+                "camera translation/parallax or a different tilt.",
+                pair.index, pair.index + 1, pair_med,
+            )
     return rots, f
 
 
