@@ -100,7 +100,7 @@ were checked only on synthetic frames (within 8% of the true value) and by eye o
 - **Multiband blending** is now the default (`--blend-mode multiband`; `feather` is still
   available): gain-block exposure compensation, graph-cut seams, Laplacian-pyramid blend (OpenCV
   `cv2.detail`). Ghosting of moving people in class and the cafe table is gone in the renders.
-  Canvases above 60 MP fall back to feather with a warning.
+  Canvases above 20 MP fall back to feather with a warning.
 - Remaining: boat's right-hand join still shows a skyline break (parallax between the shots),
-  there is no 360-degree wrap, and the full-resolution boat canvas (381 MP) uses feather because
+  there is no 360-degree wrap, and the full-resolution boat canvas (34 MP in cylindrical) uses feather because
   of the memory limit.

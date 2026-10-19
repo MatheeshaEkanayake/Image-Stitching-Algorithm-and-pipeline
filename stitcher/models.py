@@ -31,7 +31,7 @@ class StitchConfig:
     focal_length: float = 0.0
     bundle_adjust: bool = True
     blend_mode: str = "multiband"
-    multiband_max_megapixels: float = 60.0
+    multiband_max_megapixels: float = 20.0
     feather_width: int = 50
     max_canvas_megapixels: float = 400.0
     max_image_dimension: int = 0

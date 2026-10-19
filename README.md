@@ -55,7 +55,7 @@ print(report.to_json())
 | `--max-area-ratio` | `10.0` | Reject a pair homography that scales an image's area by more than this factor (or its inverse) |
 | `--projection {cylindrical,planar}` | `cylindrical` | `cylindrical` treats the photos as a rotating camera and removes the stretching of the planar chain; `planar` is the original homography chain (kept for baseline comparison and flat scenes) |
 | `--focal` | `0` (estimate) | Focal length in pixels for the cylindrical projection |
-| `--blend-mode {multiband,feather}` | `multiband` | `multiband`: exposure compensation, graph-cut seams and Laplacian-pyramid blending (removes ghosting). `feather`: distance-weighted averaging. Canvases above 60 MP fall back to feather automatically |
+| `--blend-mode {multiband,feather}` | `multiband` | `multiband`: exposure compensation, graph-cut seams and Laplacian-pyramid blending (removes ghosting). `feather`: distance-weighted averaging. Canvases above 20 MP fall back to feather automatically |
 | `--feather-width` | `50` | Feather ramp width in px (`0` = unclipped distance weighting) |
 | `--max-image-dimension` | `0` (off) | Downscale inputs so the longer side is at most this |
 | `--max-canvas-mp` | `400` | Refuse canvases larger than this many megapixels |
@@ -118,7 +118,7 @@ Images/                    sample input sets (ordered left to right)
   structure (for example the far skyline in `Images/boat`) can still show a break. With
   `--blend-mode feather` moving objects and parallax double up.
 - **Multiband memory.** It holds all warped images and pyramids, so it is limited to canvases of
-  60 MP or less (then it falls back to feather); use `--max-image-dimension` for large photos.
+  20 MP or less (then it falls back to feather); use `--max-image-dimension` for large photos.
 - **`--projection planar` fails on wide rotating-camera sweeps.** Chaining planar homographies
   stretches the outer images without bound, so cylindrical is the default.
 - **Cylindrical assumes a camera rotating about its centre with one focal length.** The focal
