@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import cv2
+import numpy as np
 
 from stitcher.models import StitchConfig, StitchingError
 from stitcher.panorama_stitcher import PanoramaStitcher
@@ -75,6 +76,18 @@ class JobStore:
     def delete(self, job_id: str) -> None:
         shutil.rmtree(self.path(job_id), ignore_errors=True)
 
+    def fail_interrupted(self) -> int:
+        """Mark jobs left queued/running by a previous server process as failed."""
+        count = 0
+        for job_id in os.listdir(self.root):
+            if self.exists(job_id) and self.read_status(job_id).get("state") in (
+                "queued", "running"
+            ):
+                self.write_status(job_id, state="failed",
+                                  error="The server restarted while this was processing.")
+                count += 1
+        return count
+
 
 class JobRunner:
     """Runs one stitch at a time: a stitch needs gigabytes of RAM, so jobs are queued."""
@@ -108,6 +121,7 @@ class JobRunner:
                 raise StitchingError("Failed to write the panorama.")
             with open(store.path(job_id, "report.json"), "w", encoding="utf-8") as handle:
                 handle.write(report.to_json())
+            write_thumbnail(panorama, store.path(job_id, "thumb.jpg"))
             manifest = build_tile_pyramid(
                 panorama, store.path(job_id, "tiles"), tile_size=options.tile_size
             )
@@ -124,6 +138,15 @@ class JobRunner:
                 job_id, state="failed", error="Internal error while stitching.",
                 finished=time.time(),
             )
+
+
+def write_thumbnail(panorama: np.ndarray, path: str, width: int = 1024) -> None:
+    """Small JPEG preview for library and feed cards."""
+    height, full_width = panorama.shape[:2]
+    scale = min(1.0, width / full_width)
+    thumb = cv2.resize(panorama, (max(1, round(full_width * scale)), max(1, round(height * scale))),
+                       interpolation=cv2.INTER_AREA)
+    cv2.imwrite(path, thumb, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
 
 def parse_options(raw: Dict[str, Optional[str]]) -> JobOptions:

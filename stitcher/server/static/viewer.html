@@ -2,75 +2,108 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>Panorama viewer</title>
 <style>
-  :root { --bg: #111; --fg: #eee; --accent: #4da3ff; }
+  :root { --bg: #0b1220; --panel: rgba(11, 18, 32, .82); --fg: #e8eefc; --muted: #9fb0d0;
+          --blue: #1e6fff; --blue-soft: rgba(30, 111, 255, .18); }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
-               font: 14px system-ui, sans-serif; }
+               font: 14px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   #viewer { position: absolute; inset: 0; }
   #bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; display: flex;
-         gap: 12px; align-items: center; padding: 8px 16px; background: rgba(0,0,0,.65); }
-  #bar a, #bar button { color: var(--accent); background: none; border: 0; font: inherit;
-                        cursor: pointer; text-decoration: underline; padding: 6px 0; }
-  #info { flex: 1; opacity: .85; }
-  #msg { position: absolute; inset: 0; display: grid; place-items: center; }
+         gap: 12px; align-items: center; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+         background: var(--panel); border-top: 2px solid var(--blue); }
+  #info { flex: 1; color: var(--muted); font-size: 12px; min-width: 0;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button { background: var(--blue); color: #fff; border: 0; border-radius: 10px;
+           padding: 10px 14px; font: 600 14px inherit; cursor: pointer; }
+  button:active { opacity: .85; }
+  #detail-view { position: absolute; inset: 0; z-index: 10; display: none; background: var(--bg);
+                 overflow: auto; -webkit-overflow-scrolling: touch; }
+  #detail-view.open { display: block; }
+  #detail-view img { display: block; max-width: none; image-rendering: auto; }
+  #detail-head { position: sticky; top: 0; left: 0; display: flex; gap: 12px; align-items: center;
+                 padding: 10px 16px; background: var(--panel); border-bottom: 2px solid var(--blue); }
+  #detail-head span { flex: 1; color: var(--muted); font-size: 12px; }
+  .navigator { border: 2px solid var(--blue) !important; }
 </style>
 </head>
 <body>
 <div id="viewer"></div>
 <div id="bar"><span id="info">Loading…</span>
-  <button id="detail" type="button">Open this view at full resolution</button>
-  <a id="download" href="#">Download TIFF</a></div>
+  <button id="detail" type="button">Full detail</button></div>
+<div id="detail-view"><div id="detail-head"><span id="detail-info"></span>
+  <button id="close" type="button">Close</button></div><img id="detail-img" alt="Full-resolution region"></div>
 <script src="/static/openseadragon.min.js"></script>
 <script>
 (function () {
+  // /captures/<id>/view#token=...  -- the fragment never reaches the server or its logs.
   var base = location.pathname.replace(/\/view\/?$/, '');
-  var token = new URLSearchParams(location.search).get('token');
-  var qs = token ? '?token=' + encodeURIComponent(token) : '';
-  document.getElementById('download').href = base + '/panorama.tif' + qs;
+  var params = new URLSearchParams(location.hash.slice(1));
+  var headers = params.get('token') ? { Authorization: 'Bearer ' + params.get('token') } : {};
+  var info = document.getElementById('info');
+  function post(msg) {  // tell the React Native app what happened, if we are in its WebView
+    if (window.ReactNativeWebView) window.ReactNativeWebView.postMessage(JSON.stringify(msg));
+  }
 
-  fetch(base + '/manifest.json' + qs).then(function (r) {
-    if (!r.ok) throw new Error('Panorama is not ready (' + r.status + ')');
+  fetch(base + '/manifest.json', { headers: headers }).then(function (r) {
+    if (!r.ok) throw new Error(r.status === 409 ? 'Panorama is still processing' : 'Could not load (' + r.status + ')');
     return r.json();
   }).then(function (m) {
     var viewer = OpenSeadragon({
       id: 'viewer', showNavigationControl: false, showNavigator: true,
-      navigatorPosition: 'TOP_RIGHT', gestureSettingsTouch: { pinchToZoom: true },
-      maxZoomPixelRatio: 4, constrainDuringPan: true, visibilityRatio: 0.5,
+      navigatorPosition: 'TOP_RIGHT', navigatorBackground: '#0b1220',
+      loadTilesWithAjax: true, ajaxHeaders: headers,
+      maxZoomPixelRatio: 4, visibilityRatio: 0.5, constrainDuringPan: true,
+      gestureSettingsTouch: { pinchToZoom: true, flickEnabled: true },
       tileSources: {
         width: m.width, height: m.height, tileSize: m.tile_size, tileOverlap: 0,
         minLevel: m.min_level, maxLevel: m.max_level,
         getTileUrl: function (level, x, y) {
-          return base + '/tiles/' + level + '/' + x + '_' + y + '.' + m.format + qs;
+          return base + '/tiles/' + level + '/' + x + '_' + y + '.' + m.format;
         }
       }
     });
     function region() {
       var b = viewer.viewport.viewportToImageRectangle(viewer.viewport.getBounds(true));
       var x = Math.max(0, Math.round(b.x)), y = Math.max(0, Math.round(b.y));
-      return { x: x, y: y, w: Math.min(m.width - x, Math.round(b.width)),
-               h: Math.min(m.height - y, Math.round(b.height)) };
+      return { x: x, y: y, w: Math.max(1, Math.min(m.width - x, Math.round(b.width))),
+               h: Math.max(1, Math.min(m.height - y, Math.round(b.height))) };
     }
-    viewer.addHandler('animation-finish', function () {
+    function update() {
       var r = region();
-      document.getElementById('info').textContent =
-        m.width + ' x ' + m.height + ' px  |  view ' + r.w + ' x ' + r.h + ' at (' + r.x + ', ' + r.y + ')';
-    });
+      var zoom = viewer.viewport.viewportToImageZoom(viewer.viewport.getZoom(true));
+      info.textContent = m.width + '×' + m.height + ' px · ' + Math.round(zoom * 100) + '% · view ' + r.w + '×' + r.h;
+    }
+    viewer.addHandler('open', function () { update(); post({ type: 'ready', width: m.width, height: m.height }); });
+    viewer.addHandler('animation-finish', update);
+    viewer.addHandler('open-failed', function () { info.textContent = 'Could not open the panorama'; });
+
     document.getElementById('detail').addEventListener('click', function () {
       var r = region();
-      // keep within the server's crop limit by scaling down only when needed
-      var scale = Math.min(1, Math.sqrt(16e6 / Math.max(1, r.w * r.h)));
-      var url = base + '/crop?x=' + r.x + '&y=' + r.y + '&w=' + r.w + '&h=' + r.h +
-                '&scale=' + scale.toFixed(3) + (token ? '&token=' + encodeURIComponent(token) : '');
-      window.open(url, '_blank');
+      var scale = Math.min(1, Math.sqrt(16e6 / (r.w * r.h)));  // server limit: 16 MP
+      var url = base + '/crop?x=' + r.x + '&y=' + r.y + '&w=' + r.w + '&h=' + r.h + '&scale=' + scale.toFixed(4);
+      info.textContent = 'Loading full-resolution region…';
+      fetch(url, { headers: headers }).then(function (res) {
+        if (!res.ok) throw new Error('Region failed (' + res.status + ')');
+        return res.blob();
+      }).then(function (blob) {
+        var img = document.getElementById('detail-img');
+        if (img.src) URL.revokeObjectURL(img.src);
+        img.src = URL.createObjectURL(blob);
+        document.getElementById('detail-info').textContent =
+          r.w + '×' + r.h + ' px at (' + r.x + ', ' + r.y + ')' + (scale < 1 ? ' · scaled ' + Math.round(scale * 100) + '%' : ' · native pixels');
+        document.getElementById('detail-view').classList.add('open');
+        update();
+        post({ type: 'detail', region: r, scale: scale });
+      }).catch(function (e) { info.textContent = e.message; });
     });
-    var h = location.hash.match(/x=(\d+)&y=(\d+)&w=(\d+)&h=(\d+)/);
-    if (h) viewer.addOnceHandler('open', function () {
-      viewer.viewport.fitBounds(viewer.viewport.imageToViewportRectangle(+h[1], +h[2], +h[3], +h[4]), true);
+    document.getElementById('close').addEventListener('click', function () {
+      document.getElementById('detail-view').classList.remove('open');
     });
   }).catch(function (e) {
-    document.getElementById('info').textContent = e.message;
+    info.textContent = e.message;
+    post({ type: 'error', message: e.message });
   });
 })();
 </script>
