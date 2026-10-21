@@ -10,3 +10,4 @@ debug/
 .pytest_cache/
 .ruff_cache/
 server_data/
+.claude/
