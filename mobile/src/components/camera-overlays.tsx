@@ -1,9 +1,8 @@
-import { Ionicons } from '@expo/vector-icons';
 import { Accelerometer } from 'expo-sensors';
-import { useEffect, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Animated, Platform, StyleSheet, View } from 'react-native';
 
-import { colors, radius } from '@/lib/theme';
+import { colors } from '@/lib/theme';
 
 /** iPhone-style rule-of-thirds grid. A third is also the recommended overlap between shots. */
 export function CameraGrid() {
@@ -15,90 +14,130 @@ export function CameraGrid() {
       {[1, 2].map((n) => (
         <View key={`h${n}`} style={[styles.line, styles.horizontal, { top: `${(n * 100) / 3}%` }]} />
       ))}
-      <View style={styles.centre} />
     </View>
   );
 }
 
-export type Level = {
+const TICKS = 20; // one tick per 5% of the frame
+
+/** Tick marks along the top and left edges, with a longer mark every 10% and the centre. */
+export function CameraRuler() {
+  return (
+    <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+      {Array.from({ length: TICKS + 1 }, (_, i) => {
+        const major = i % 2 === 0;
+        const centre = i === TICKS / 2;
+        const length = centre ? 26 : major ? 16 : 9;
+        const pos = `${(i * 100) / TICKS}%` as const;
+        return (
+          <View key={i}>
+            <View style={[styles.tick, { top: 0, left: pos, width: 1.5, height: length }]} />
+            <View style={[styles.tick, { left: 0, top: pos, height: 1.5, width: length }]} />
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+/** Degrees off level on each axis: positive x = tilted right, positive y = tilted down. */
+export type Tilt = {
   /** 'upright': aimed at a wall or scene; 'flat': looking straight down at a table. */
   mode: 'upright' | 'flat';
-  /** Degrees off level: horizon roll when upright, tilt away from flat when flat. */
-  error: number;
-  /** Degrees between the screen and vertical (0 = upright, 90 = flat). */
-  lean: number;
+  x: number;
+  y: number;
 };
 
 const LEVEL_TOLERANCE_DEG = 1.5;
+const deg = (rad: number) => (rad * 180) / Math.PI;
 
 /**
- * Phone orientation from gravity. Uses only magnitudes, so it does not depend on the
- * accelerometer's axis sign convention, which the Expo docs do not specify per platform.
+ * Phone orientation from gravity. expo-sensors reports opposite signs on iOS and Android, so
+ * the reading is first brought to the Android convention (resting face up gives z = +1,
+ * held upright in portrait gives y = +1).
  */
-export function levelFromGravity(x: number, y: number, z: number): Level | null {
+export function tiltFromGravity(rawX: number, rawY: number, rawZ: number): Tilt | null {
+  const sign = Platform.OS === 'ios' ? -1 : 1;
+  const x = rawX * sign;
+  const y = rawY * sign;
+  const z = rawZ * sign;
   const magnitude = Math.hypot(x, y, z);
   if (!Number.isFinite(magnitude) || magnitude < 0.5) return null; // no usable reading
-  const deg = (rad: number) => (rad * 180) / Math.PI;
   const lean = deg(Math.asin(Math.min(1, Math.abs(z) / magnitude)));
-  if (lean > 45) return { mode: 'flat', error: 90 - lean, lean };
-  // angle of gravity from the nearest screen axis: 0 when the picture's horizon is level,
-  // whether the phone is in portrait or landscape
-  const roll = deg(Math.atan2(Math.min(Math.abs(x), Math.abs(y)), Math.max(Math.abs(x), Math.abs(y))));
-  return { mode: 'upright', error: roll, lean };
+  if (lean > 45) {
+    // shooting down at a table: both axes are tilts away from flat
+    return { mode: 'flat', x: deg(Math.asin(Math.max(-1, Math.min(1, x / magnitude)))), y: deg(Math.asin(Math.max(-1, Math.min(1, y / magnitude)))) };
+  }
+  // held up at a scene: horizontal = roll of the horizon, vertical = pitch up/down
+  return { mode: 'upright', x: deg(Math.atan2(x, Math.abs(y))), y: deg(Math.asin(Math.max(-1, Math.min(1, z / magnitude)))) };
 }
 
-/** Live level reading while ``active``; the sensor is only subscribed when needed. */
-export function useLevel(active: boolean): Level | null {
-  const [level, setLevel] = useState<Level | null>(null);
+/** Live tilt reading while ``active``; the sensor is only subscribed when needed. */
+export function useTilt(active: boolean, onTilt: (tilt: Tilt | null) => void) {
+  const callback = useRef(onTilt);
+  callback.current = onTilt;
   useEffect(() => {
     if (!active) return;
-    Accelerometer.setUpdateInterval(150);
-    const subscription = Accelerometer.addListener(({ x, y, z }) => setLevel(levelFromGravity(x, y, z)));
+    Accelerometer.setUpdateInterval(50);
+    const subscription = Accelerometer.addListener(({ x, y, z }) => callback.current(tiltFromGravity(x, y, z)));
     return () => subscription.remove();
   }, [active]);
-  return active ? level : null;
 }
 
-export function LevelBadge({ level }: { level: Level | null }) {
-  if (!level) return null;
-  const ok = level.error <= LEVEL_TOLERANCE_DEG;
-  const degrees = `${level.error.toFixed(0)}°`;
-  const text = level.mode === 'flat' ? (ok ? 'Flat: level' : `Flat: tilted ${degrees}`) : ok ? 'Level' : `Tilted ${degrees}`;
+const PX_PER_DEG = 7;
+const MAX_OFFSET = 80;
+const clamp = (n: number) => Math.max(-MAX_OFFSET, Math.min(MAX_OFFSET, n));
+
+/**
+ * Level indicator like the iPhone camera's: a fixed cross in the middle of the screen and a
+ * second cross that slides horizontally and vertically with the phone's tilt. When both are
+ * on top of each other (within a degree or two) the cross turns green.
+ */
+export function LevelCross({ active }: { active: boolean }) {
+  const offset = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
+  const [aligned, setAligned] = useState(false);
+  const alignedRef = useRef(false);
+
+  useTilt(active, (tilt) => {
+    if (!tilt) return;
+    // the cross moves the way the phone leans, like a bubble drifting to the high side
+    offset.setValue({ x: clamp(tilt.x * PX_PER_DEG), y: clamp(-tilt.y * PX_PER_DEG) });
+    const ok = Math.abs(tilt.x) <= LEVEL_TOLERANCE_DEG && Math.abs(tilt.y) <= LEVEL_TOLERANCE_DEG;
+    if (ok !== alignedRef.current) {
+      alignedRef.current = ok;
+      setAligned(ok);
+    }
+  });
+
+  if (!active) return null;
+  const tint = aligned ? colors.success : '#FFD60A';
   return (
-    <View
-      accessibilityLiveRegion="polite"
-      accessibilityLabel={text}
-      style={[styles.badge, { backgroundColor: ok ? colors.success : 'rgba(11,18,32,0.7)' }]}>
-      <Ionicons name={ok ? 'checkmark-circle' : 'phone-portrait-outline'} size={14} color={colors.white} />
-      <Text style={styles.badgeText}>{text}</Text>
+    <View pointerEvents="none" style={styles.crossHost} accessibilityLabel={aligned ? 'Level' : 'Not level'}>
+      {/* fixed reference cross */}
+      <Cross color="rgba(255,255,255,0.85)" />
+      {/* moving cross, driven by the accelerometer */}
+      <Animated.View style={[styles.crossLayer, { transform: offset.getTranslateTransform() }]}>
+        <Cross color={tint} thick />
+      </Animated.View>
+    </View>
+  );
+}
+
+function Cross({ color, thick }: { color: string; thick?: boolean }) {
+  const t = thick ? 2.5 : 1.5;
+  return (
+    <View style={styles.crossLayer}>
+      <View style={{ position: 'absolute', width: 34, height: t, backgroundColor: color, borderRadius: t }} />
+      <View style={{ position: 'absolute', width: t, height: 34, backgroundColor: color, borderRadius: t }} />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  line: { position: 'absolute', backgroundColor: 'rgba(255,255,255,0.45)' },
+  line: { position: 'absolute', backgroundColor: 'rgba(255,255,255,0.4)' },
   vertical: { top: 0, bottom: 0, width: StyleSheet.hairlineWidth * 2 },
   horizontal: { left: 0, right: 0, height: StyleSheet.hairlineWidth * 2 },
-  centre: {
-    position: 'absolute',
-    left: '50%',
-    top: '50%',
-    width: 18,
-    height: 18,
-    marginLeft: -9,
-    marginTop: -9,
-    borderRadius: 9,
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.7)',
-  },
-  badge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    alignSelf: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: radius.pill,
-  },
-  badgeText: { color: colors.white, fontWeight: '700', fontSize: 13 },
+  tick: { position: 'absolute', backgroundColor: 'rgba(255,214,10,0.9)' },
+  crossHost: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
+  crossLayer: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
 });

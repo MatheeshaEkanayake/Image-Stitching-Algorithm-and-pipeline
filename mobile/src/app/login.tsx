@@ -10,6 +10,10 @@ import { colors, radius, space } from '@/lib/theme';
 export default function LoginScreen() {
   const { serverUrl, signIn } = useAuth();
   const [server, setServer] = useState(serverUrl);
+  // The address is configured once (EXPO_PUBLIC_SERVER_URL); it is only shown on request, or
+  // when no address is known at all.
+  const [showServer, setShowServer] = useState(false);
+  const serverVisible = showServer || !server.trim();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [register, setRegister] = useState(false);
@@ -19,7 +23,8 @@ export default function LoginScreen() {
   async function submit() {
     setError(null);
     if (!server.trim() || !username.trim() || !password) {
-      setError('Fill in the server address, username and password.');
+      setError(server.trim() ? 'Fill in your username and password.' : 'Fill in the server address, username and password.');
+      if (!server.trim()) setShowServer(true);
       return;
     }
     setBusy(true);
@@ -61,13 +66,6 @@ export default function LoginScreen() {
               })}
             </View>
 
-            <Field
-              label="Server address"
-              value={server}
-              onChangeText={setServer}
-              placeholder="192.168.1.20:8000"
-              keyboardType="url"
-            />
             <Field label="Username" value={username} onChangeText={setUsername} placeholder="your-name" textContentType="username" />
             <Field
               label="Password"
@@ -78,13 +76,22 @@ export default function LoginScreen() {
               textContentType={register ? 'newPassword' : 'password'}
               onSubmitEditing={submit}
             />
+            {serverVisible ? (
+              <Field
+                label="Server address"
+                value={server}
+                onChangeText={setServer}
+                placeholder="192.168.1.20:8000"
+                keyboardType="url"
+              />
+            ) : null}
             <ErrorBanner message={error} />
             <Button title={register ? 'Create account' : 'Sign in'} onPress={submit} loading={busy} icon="arrow-forward" />
-            <Text style={styles.hint}>
-              Run the server on your computer with{'\n'}
-              <Text style={styles.code}>python -m stitcher.server --host 0.0.0.0</Text>
-              {'\n'}and enter its Wi-Fi address and port above.
-            </Text>
+            {!serverVisible ? (
+              <Text style={styles.serverLink} onPress={() => setShowServer(true)} accessibilityRole="button">
+                Connection settings
+              </Text>
+            ) : null}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -93,39 +100,43 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: colors.blue },
+  safe: { flex: 1, backgroundColor: colors.ink },
   scroll: { flexGrow: 1, justifyContent: 'flex-end' },
   hero: { alignItems: 'center', paddingVertical: 40, gap: space.sm },
   logo: {
     width: 76,
     height: 76,
     borderRadius: 22,
-    backgroundColor: colors.blueDark,
+    backgroundColor: colors.blue,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.35)',
+    shadowColor: colors.blue,
+    shadowOpacity: 0.6,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
   },
   brand: { fontSize: 30, fontWeight: '800', color: colors.white },
-  tagline: { fontSize: 15, color: 'rgba(255,255,255,0.85)' },
+  tagline: { fontSize: 15, color: colors.muted },
   panel: {
-    backgroundColor: colors.bg,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
+    backgroundColor: colors.card,
+    borderTopLeftRadius: 32,
+    borderTopRightRadius: 32,
+    borderWidth: 1,
+    borderColor: colors.line,
     padding: space.xl,
     gap: space.lg,
   },
-  segment: { flexDirection: 'row', backgroundColor: colors.blueSoft, borderRadius: radius.md, padding: 4 },
+  segment: { flexDirection: 'row', backgroundColor: colors.inputBg, borderRadius: radius.pill, padding: 4 },
   segmentItem: {
     flex: 1,
     textAlign: 'center',
     paddingVertical: 10,
-    borderRadius: radius.sm,
+    borderRadius: radius.pill,
     fontWeight: '700',
-    color: colors.blueDark,
+    color: colors.muted,
     overflow: 'hidden',
   },
   segmentActive: { backgroundColor: colors.blue, color: colors.white },
-  hint: { fontSize: 12, color: colors.muted, textAlign: 'center', lineHeight: 18 },
-  code: { fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }), color: colors.blueDark },
+  serverLink: { fontSize: 13, fontWeight: '600', color: colors.muted, textAlign: 'center', paddingVertical: 4 },
 });

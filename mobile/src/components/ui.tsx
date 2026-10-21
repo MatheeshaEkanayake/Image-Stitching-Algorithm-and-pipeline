@@ -29,7 +29,7 @@ export function Button({ title, onPress, variant = 'primary', icon, loading, dis
   const palette = {
     primary: { bg: colors.blue, fg: colors.white, border: colors.blue },
     secondary: { bg: colors.blueSoft, fg: colors.blueDark, border: colors.blueBorder },
-    danger: { bg: colors.dangerSoft, fg: colors.danger, border: colors.dangerSoft },
+    danger: { bg: colors.dangerSoft, fg: colors.danger, border: 'rgba(255,107,107,0.3)' },
     ghost: { bg: 'transparent', fg: colors.blue, border: 'transparent' },
   }[variant];
   const inactive = disabled || loading;
@@ -131,23 +131,23 @@ export function ErrorBanner({ message, onRetry }: { message: string | null; onRe
 
 const styles = StyleSheet.create({
   button: {
-    minHeight: 48,
+    minHeight: 52,
     paddingHorizontal: space.lg,
-    borderRadius: radius.md,
+    borderRadius: radius.pill,
     borderWidth: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: space.sm,
   },
-  buttonText: { fontSize: 16, fontWeight: '600' },
-  label: { fontSize: 13, fontWeight: '600', color: colors.muted },
+  buttonText: { fontSize: 16, fontWeight: '700', letterSpacing: 0.2 },
+  label: { fontSize: 12, fontWeight: '700', color: colors.muted, textTransform: 'uppercase', letterSpacing: 0.8 },
   input: {
     minHeight: 48,
     borderRadius: radius.md,
-    borderWidth: 1.5,
+    borderWidth: 1,
     borderColor: colors.blueBorder,
-    backgroundColor: colors.white,
+    backgroundColor: colors.inputBg,
     paddingHorizontal: space.md,
     paddingVertical: space.sm,
     fontSize: 16,
@@ -184,5 +184,5 @@ const styles = StyleSheet.create({
     padding: space.md,
   },
   errorText: { flex: 1, color: colors.danger, fontSize: 14 },
-  errorRetry: { color: colors.blue, fontWeight: '700' },
+  errorRetry: { color: colors.blueDark, fontWeight: '700' },
 });
