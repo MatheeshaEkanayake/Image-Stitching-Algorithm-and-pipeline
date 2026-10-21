@@ -15,7 +15,7 @@ import cv2
 import numpy as np
 
 from stitcher.blending import WarpedImage
-from stitcher.geometry import PairResult, global_transforms
+from stitcher.geometry import PairResult, chain_transforms, spanning_tree
 from stitcher.models import ImageData, StitchConfig, StitchingError
 
 logger = logging.getLogger("PanoramaStitcher")
@@ -26,6 +26,7 @@ _ROI_PAD = 2
 WARP_INTERPOLATION = cv2.INTER_CUBIC  # sharper than bilinear when resampling
 _ROBUST_SCALES = (300.0, 60.0, 15.0, 5.0)  # px; truncation thresholds for bundle adjustment
 _FINAL_SCALE = _ROBUST_SCALES[-1]
+_LOOP_PAIR_MAX_ERROR = 5.0  # px; extra overlaps worse than this are left out of the adjustment
 
 
 def _intrinsics(f: float, width: int, height: int) -> np.ndarray:
@@ -41,19 +42,15 @@ def _rotation_residual(
     return float(np.sum((m.T @ m - np.eye(3)) ** 2))
 
 
-def estimate_focal(
-    homographies: Sequence[np.ndarray], sizes: Sequence[Tuple[int, int]]
-) -> float:
+def estimate_focal(pairs: Sequence[PairResult], sizes: Sequence[Tuple[int, int]]) -> float:
     """Focal length in pixels that makes the pair homographies best explained by rotations.
 
-    ``homographies[i]`` maps image i+1 onto image i; ``sizes`` are (width, height) per image.
+    Each pair's homography maps image ``j`` onto image ``i``; ``sizes`` are (width, height).
     """
     longest = float(max(max(s) for s in sizes))
 
     def cost(f: float) -> float:
-        return sum(
-            _rotation_residual(h, f, sizes[i + 1], sizes[i]) for i, h in enumerate(homographies)
-        )
+        return sum(_rotation_residual(p.homography, f, sizes[p.j], sizes[p.i]) for p in pairs)
 
     grid = np.geomspace(0.25 * longest, 8.0 * longest, 400)
     best = int(np.argmin([cost(f) for f in grid]))
@@ -69,12 +66,12 @@ def estimate_focal(
 
 
 def pairwise_rotations(
-    homographies: Sequence[np.ndarray], f: float, sizes: Sequence[Tuple[int, int]]
+    pairs: Sequence[PairResult], f: float, sizes: Sequence[Tuple[int, int]]
 ) -> List[np.ndarray]:
-    """Nearest rotation to K_i^-1 H_i K_{i+1} for each pair (maps camera i+1 onto camera i)."""
+    """Nearest rotation to K_i^-1 H K_j for each pair (maps camera j onto camera i)."""
     rotations = []
-    for i, h in enumerate(homographies):
-        m = np.linalg.inv(_intrinsics(f, *sizes[i])) @ h @ _intrinsics(f, *sizes[i + 1])
+    for p in pairs:
+        m = np.linalg.inv(_intrinsics(f, *sizes[p.i])) @ p.homography @ _intrinsics(f, *sizes[p.j])
         m = m / np.cbrt(np.linalg.det(m))
         u, _, vt = np.linalg.svd(m)
         rotation = u @ vt
@@ -82,6 +79,30 @@ def pairwise_rotations(
             rotation = -rotation
         rotations.append(rotation)
     return rotations
+
+
+def _pair_residuals(
+    pair: PairResult, rots: Sequence[np.ndarray], f: float, sizes: Sequence[Tuple[int, int]]
+) -> np.ndarray:
+    """(N, 2) pixel errors of a pair's inliers: image j's points mapped into image i."""
+    (wi, hi), (wj, hj) = sizes[pair.i], sizes[pair.j]
+    src, dst = pair.points_src, pair.points_dst
+    rays = np.stack([(src[:, 0] - wj / 2) / f, (src[:, 1] - hj / 2) / f,
+                     np.ones(len(src))], axis=1) @ (rots[pair.i].T @ rots[pair.j]).T
+    with np.errstate(divide="ignore", invalid="ignore"):
+        px = f * rays[:, 0] / rays[:, 2] + wi / 2
+        py = f * rays[:, 1] / rays[:, 2] + hi / 2
+    err = np.stack([px - dst[:, 0], py - dst[:, 1]], axis=1)
+    err[~np.isfinite(err) | (rays[:, 2:3] <= 0).repeat(2, axis=1)] = 1e3
+    return err
+
+
+def pair_errors(
+    pairs: Sequence[PairResult], rots: Sequence[np.ndarray], f: float,
+    sizes: Sequence[Tuple[int, int]],
+) -> List[float]:
+    """Median absolute pixel error of each pair under the given cameras."""
+    return [float(np.median(np.abs(_pair_residuals(p, rots, f, sizes)))) for p in pairs]
 
 
 def refine_cameras(
@@ -92,16 +113,14 @@ def refine_cameras(
     sizes: Sequence[Tuple[int, int]],
     iterations: int = 40,
     fix_focal: bool = False,
-) -> Tuple[List[np.ndarray], float, float]:
+) -> Tuple[List[np.ndarray], float, bool]:
     """Jointly refine all rotations and one shared focal length (bundle adjustment).
 
-    Minimises the pixel reprojection error of every RANSAC inlier between adjacent images
+    Minimises the pixel reprojection error of every RANSAC inlier of every overlapping pair
     with Levenberg-Marquardt. ``rotations[i]`` maps camera i onto the reference camera.
     ``fix_focal`` keeps the focal length constant. Returns the refined rotations, the focal
-    length and the worst per-pair median error in pixels (``inf`` if refinement did not help):
-    a large value means the images are not a pure camera rotation. If refinement does not
-    improve the error or drives the focal length out of a plausible range, the inputs are
-    returned instead.
+    length and whether refinement helped. If it does not lower the error, or drives the focal
+    length out of a plausible range, the inputs are returned with ``False``.
     """
     count = len(rotations)
     free = [i for i in range(count) if i != reference]
@@ -115,20 +134,7 @@ def refine_cameras(
 
     def residuals(x: np.ndarray) -> np.ndarray:
         rots, f = unpack(x)
-        out = []
-        for pair in pairs:
-            i = pair.index
-            (wi, hi), (wj, hj) = sizes[i], sizes[i + 1]
-            src, dst = pair.points_src, pair.points_dst
-            rays = np.stack([(src[:, 0] - wj / 2) / f, (src[:, 1] - hj / 2) / f,
-                             np.ones(len(src))], axis=1) @ (rots[i].T @ rots[i + 1]).T
-            with np.errstate(divide="ignore", invalid="ignore"):
-                px = f * rays[:, 0] / rays[:, 2] + wi / 2
-                py = f * rays[:, 1] / rays[:, 2] + hi / 2
-            err = np.stack([px - dst[:, 0], py - dst[:, 1]], axis=1)
-            err[~np.isfinite(err) | (rays[:, 2:3] <= 0).repeat(2, axis=1)] = 1e3
-            out.append(err.ravel())
-        return np.concatenate(out)
+        return np.concatenate([_pair_residuals(p, rots, f, sizes).ravel() for p in pairs])
 
     x = np.zeros(1 + 3 * len(free))
     x[0] = np.log(focal)
@@ -182,24 +188,10 @@ def refine_cameras(
     if not (0.25 * longest <= f <= 8 * longest) or robust_cost(r, _FINAL_SCALE) >= start_cost:
         logger.warning("Bundle adjustment did not help (median error %.2f -> %.2f px); keeping "
                        "the initial cameras.", start_med, end_med)
-        return list(rotations), focal, float("inf")
+        return list(rotations), focal, False
     logger.info("Bundle adjustment: median error %.2f -> %.2f px, focal %.1f -> %.1f px",
                 start_med, end_med, focal, f)
-    offset = 0
-    worst = 0.0
-    for pair in pairs:
-        count = 2 * len(pair.points_src)
-        pair_med = float(np.median(np.abs(r[offset:offset + count])))
-        offset += count
-        worst = max(worst, pair_med)
-        if pair_med > 5.0:
-            logger.warning(
-                "Images %d and %d do not fit a rotating-camera model (median error %.1f px "
-                "after adjustment); expect a visible misalignment there, usually caused by "
-                "camera translation/parallax or a different tilt.",
-                pair.index, pair.index + 1, pair_med,
-            )
-    return rots, f, worst
+    return rots, f, True
 
 
 class CylindricalProjection:
@@ -211,26 +203,66 @@ class CylindricalProjection:
         pairs: Sequence[PairResult],
         config: StitchConfig,
     ) -> None:
-        homographies = [p.homography for p in pairs]
         self.sizes = [(d.image.shape[1], d.image.shape[0]) for d in images]
         if config.focal_length > 0:
             self.focal = float(config.focal_length)
         else:
-            self.focal = estimate_focal(homographies, self.sizes)
+            self.focal = estimate_focal(pairs, self.sizes)
         logger.info("Focal length: %.1f px (%s)", self.focal,
                     "given" if config.focal_length > 0 else "estimated")
         self.fit_error: Optional[float] = None  # worst per-pair error after adjustment (px)
-        pair_rotations = pairwise_rotations(homographies, self.focal, self.sizes)
-        self.rotations, self.reference = global_transforms(pair_rotations, len(images))
+        tree = spanning_tree(pairs, len(images))
+        tree_rotations = pairwise_rotations(tree, self.focal, self.sizes)
+        self.rotations, self.reference = chain_transforms(
+            [(p.i, p.j, r) for p, r in zip(tree, tree_rotations)], len(images)
+        )
         if config.bundle_adjust:
-            self.rotations, refined, self.fit_error = refine_cameras(
-                pairs, self.rotations, self.reference, self.focal, self.sizes,
-                fix_focal=config.focal_length > 0,
-            )
-            self.focal = refined
+            self._adjust(pairs, tree, config)
         self.offset = (0.0, 0.0)
         self.canvas_size = (0, 0)
         self._compute_canvas(config)
+
+    def _adjust(
+        self, pairs: Sequence[PairResult], tree: Sequence[PairResult], config: StitchConfig
+    ) -> None:
+        """Bundle-adjust on the spanning tree, then add the extra overlaps that agree with it.
+
+        Extra pairs (loop closures) pin down drift when they are consistent, but a pair that
+        contradicts the tree (parallax, or a false match) would drag the whole solution, so it
+        is left out. ``fit_error`` is the worst tree-pair error: the quality of the rotating
+        camera model for this capture.
+        """
+        fix = config.focal_length > 0
+        rots, focal, improved = refine_cameras(
+            tree, self.rotations, self.reference, self.focal, self.sizes, fix_focal=fix
+        )
+        if improved:
+            tree_keys = {(p.i, p.j) for p in tree}
+            extra = [p for p in pairs if (p.i, p.j) not in tree_keys]
+            agree = [p for p, e in zip(extra, pair_errors(extra, rots, focal, self.sizes))
+                     if e <= _LOOP_PAIR_MAX_ERROR]
+            if len(agree) < len(extra):
+                logger.info("Ignoring %d overlapping pair(s) that disagree with the alignment.",
+                            len(extra) - len(agree))
+            if agree:
+                rots, focal, _ = refine_cameras(
+                    list(tree) + agree, rots, self.reference, focal, self.sizes, fix_focal=fix
+                )
+        self.rotations, self.focal = rots, focal
+        if not improved:
+            self.fit_error = float("inf")
+            return
+        errors = pair_errors(tree, self.rotations, self.focal, self.sizes)
+        self.fit_error = max(errors)
+        for pair, error in zip(tree, errors):
+            if error > 5.0:
+                logger.warning(
+                    "Images %d and %d do not fit a rotating-camera model (median error %.1f px "
+                    "after adjustment); expect a visible misalignment there, usually caused by "
+                    "camera translation/parallax or a different tilt.", pair.i, pair.j, error,
+                )
+        logger.info("Bundle adjustment: focal %.1f px, worst tree-pair error %.2f px",
+                    self.focal, self.fit_error)
 
     def project(self, index: int, points: np.ndarray) -> np.ndarray:
         """Pixels of image ``index`` -> cylinder coordinates (u, v) in pixels."""

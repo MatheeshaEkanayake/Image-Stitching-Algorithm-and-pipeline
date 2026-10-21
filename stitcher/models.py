@@ -12,6 +12,7 @@ import numpy as np
 BLEND_MODES: Tuple[str, ...] = ("multiband", "feather")
 DETECTORS: Tuple[str, ...] = ("SIFT", "ORB")
 PROJECTIONS: Tuple[str, ...] = ("auto", "cylindrical", "planar")
+MATCHINGS: Tuple[str, ...] = ("auto", "all", "adjacent")
 
 
 class StitchingError(Exception):
@@ -24,6 +25,9 @@ class StitchConfig:
     orb_n_features: int = 5000
     ratio_threshold: float = 0.75
     ransac_reproj_threshold: float = 4.0
+    matching: str = "auto"
+    max_all_pairs_images: int = 30
+    match_window: int = 5
     min_matches: int = 10
     min_inliers: int = 15
     max_area_ratio: float = 10.0
@@ -48,6 +52,10 @@ class StitchConfig:
             raise ValueError(f"Unknown blend mode '{self.blend_mode}'; use one of {BLEND_MODES}.")
         if self.projection not in PROJECTIONS:
             raise ValueError(f"Unknown projection '{self.projection}'; use one of {PROJECTIONS}.")
+        if self.matching not in MATCHINGS:
+            raise ValueError(f"Unknown matching mode '{self.matching}'; use one of {MATCHINGS}.")
+        if self.match_window < 1:
+            raise ValueError("match_window must be at least 1.")
         if self.max_area_ratio <= 1.0:
             raise ValueError("max_area_ratio must be greater than 1.")
 
@@ -62,9 +70,10 @@ class ImageData:
 
 @dataclass
 class PairStats:
-    """Matching statistics for the adjacent pair (index, index + 1)."""
+    """Matching statistics for an overlapping pair of images (0-based indices a < b)."""
 
-    index: int
+    a: int
+    b: int
     matches: int
     inliers: int
     inlier_ratio: float
@@ -78,6 +87,7 @@ class StitchReport:
     image_sizes: List[Tuple[int, int]] = field(default_factory=list)  # (width, height)
     detector: str = ""
     keypoints: List[int] = field(default_factory=list)
+    pairs_tried: int = 0
     pairs: List[PairStats] = field(default_factory=list)
     projection: str = ""  # model actually used ("cylindrical" or "planar")
     reference_index: int = 0

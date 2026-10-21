@@ -15,7 +15,12 @@ import numpy as np
 
 from stitcher.blending import blend_images, blend_multiband, crop_panorama, warp_images
 from stitcher.features import FeatureMatcher
-from stitcher.geometry import canvas_geometry, estimate_homographies, global_transforms
+from stitcher.geometry import (
+    canvas_geometry,
+    estimate_homographies,
+    global_transforms,
+    spanning_tree,
+)
 from stitcher.image_io import load_images
 from stitcher.models import PairStats, StitchConfig, StitchingError, StitchReport
 from stitcher.projection import CylindricalProjection
@@ -88,13 +93,14 @@ class PanoramaStitcher:
             report.detector = self.matcher.detector_name
             report.keypoints = [len(data.keypoints or []) for data in images]
             with stage("match"):
-                matches = self.matcher.match_adjacent(images)
+                matches = self.matcher.match(images)
             with stage("homography"):
                 pairs = estimate_homographies(images, matches, config)
+            report.pairs_tried = len(matches)
             report.pairs = [
-                PairStats(p.index, p.matches, p.inliers, round(p.inlier_ratio, 4)) for p in pairs
+                PairStats(p.i, p.j, p.matches, p.inliers, round(p.inlier_ratio, 4)) for p in pairs
             ]
-            homographies = [p.homography for p in pairs]
+            spanning_tree(pairs, len(images))  # fail early, naming the unconnected photos
             with stage("canvas"):
                 projection = None
                 if config.projection in ("auto", "cylindrical"):
@@ -115,7 +121,7 @@ class PanoramaStitcher:
                     reference, canvas_size = projection.reference, projection.canvas_size
                     report.focal_length = round(projection.focal, 2)
                 else:
-                    transforms, reference = global_transforms(homographies, len(images))
+                    transforms, reference = global_transforms(pairs, len(images))
                     canvas_size, translation = canvas_geometry(images, transforms, config)
                 report.projection = "cylindrical" if projection is not None else "planar"
                 logger.info("Projection: %s", report.projection)

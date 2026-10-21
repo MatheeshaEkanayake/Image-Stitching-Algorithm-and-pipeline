@@ -104,8 +104,9 @@ async def upload_photo(
     file: UploadFile = File(...),  # noqa: B008
     user: User = Depends(current_user),  # noqa: B008
 ) -> Dict[str, Any]:
-    """Upload one photo right after it is taken. ``index`` is its left-to-right position;
-    re-sending an index replaces that photo (safe to retry after a network error)."""
+    """Upload one photo right after it is taken. ``index`` is its position in the shot sequence
+    (any capture order works: rows, columns, snakes); re-sending an index replaces that photo
+    (safe to retry after a network error)."""
     settings = request.app.state.settings
     store: JobStore = request.app.state.store
     capture = load_capture(request, capture_id, user, owner=True)

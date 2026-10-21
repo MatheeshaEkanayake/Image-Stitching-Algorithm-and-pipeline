@@ -4,13 +4,28 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 
 from stitcher.models import ImageData, StitchConfig, StitchingError
 
 logger = logging.getLogger("PanoramaStitcher")
+
+
+def candidate_pairs(count: int, config: StitchConfig) -> List[Tuple[int, int]]:
+    """Image pairs ``(i, j)``, ``i < j``, to try to match.
+
+    ``all`` tries every pair, so the capture order does not matter (rows, snake patterns,
+    right-to-left). ``adjacent`` tries only neighbours within ``config.match_window`` positions
+    in capture order, which is much cheaper for long sequences. ``auto`` uses ``all`` up to
+    ``config.max_all_pairs_images`` photos and ``adjacent`` beyond that.
+    """
+    mode = config.matching
+    if mode == "auto":
+        mode = "all" if count <= config.max_all_pairs_images else "adjacent"
+    window = count if mode == "all" else config.match_window
+    return [(i, j) for i in range(count) for j in range(i + 1, min(count, i + 1 + window))]
 
 
 class FeatureMatcher:
@@ -53,44 +68,41 @@ class FeatureMatcher:
                 self.detector_name,
             )
 
-    def match_adjacent(self, images: List[ImageData]) -> Dict[int, List[cv2.DMatch]]:
-        """Return Lowe-ratio-filtered matches keyed by the first index of each pair."""
+    def match(self, images: List[ImageData]) -> Dict[Tuple[int, int], List[cv2.DMatch]]:
+        """Lowe-ratio-filtered matches for each candidate pair ``(i, j)`` with ``i < j``.
+
+        Which pairs are tried depends on ``config.matching`` (see :func:`candidate_pairs`);
+        the photos may have been taken in any order.
+        """
         matcher = cv2.BFMatcher(self.norm_type, crossCheck=False)
         ratio = self.config.ratio_threshold
-        matches_by_pair: Dict[int, List[cv2.DMatch]] = {}
-        for index in range(len(images) - 1):
-            knn_matches = matcher.knnMatch(
-                images[index].descriptors, images[index + 1].descriptors, k=2
-            )
+        matches_by_pair: Dict[Tuple[int, int], List[cv2.DMatch]] = {}
+        for i, j in candidate_pairs(len(images), self.config):
+            knn_matches = matcher.knnMatch(images[i].descriptors, images[j].descriptors, k=2)
             good_matches = [
                 pair[0]
                 for pair in knn_matches
                 if len(pair) == 2 and pair[0].distance < ratio * pair[1].distance
             ]
-            matches_by_pair[index] = good_matches
-            logger.info(
-                "Pair (%d, %d): %d/%d good matches",
-                index,
-                index + 1,
-                len(good_matches),
-                len(knn_matches),
-            )
+            matches_by_pair[(i, j)] = good_matches
+            logger.info("Pair (%d, %d): %d/%d good matches", i, j, len(good_matches),
+                        len(knn_matches))
             if self.config.save_debug_images:
-                self._save_debug_image(images, index, good_matches)
+                self._save_debug_image(images, i, j, good_matches)
         return matches_by_pair
 
     def _save_debug_image(
-        self, images: List[ImageData], index: int, matches: List[cv2.DMatch]
+        self, images: List[ImageData], i: int, j: int, matches: List[cv2.DMatch]
     ) -> None:
         os.makedirs(self.config.debug_dir, exist_ok=True)
         image = cv2.drawMatches(
-            images[index].image,
-            images[index].keypoints,
-            images[index + 1].image,
-            images[index + 1].keypoints,
+            images[i].image,
+            images[i].keypoints,
+            images[j].image,
+            images[j].keypoints,
             matches,
             None,
             flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS,
         )
-        name = f"matches_{index:02d}_{index + 1:02d}.jpg"
+        name = f"matches_{i:02d}_{j:02d}.jpg"
         cv2.imwrite(os.path.join(self.config.debug_dir, name), image)

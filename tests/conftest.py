@@ -90,3 +90,36 @@ def rotation_folder(tmp_path_factory: pytest.TempPathFactory) -> str:
     for index, frame in enumerate(make_rotation_frames()):
         cv2.imwrite(os.path.join(str(folder), f"r{index + 1}.png"), frame)
     return str(folder)
+
+
+GRID_COLUMNS, GRID_ROWS = 3, 2
+GRID_STEP_X, GRID_STEP_Y = 260, 150
+
+
+def make_grid_frames() -> List[np.ndarray]:
+    """A 3 x 2 grid of overlapping views of one flat scene, in row-major order."""
+    scene = make_scene(width=1500, height=720)
+    frames = []
+    for row in range(GRID_ROWS):
+        for col in range(GRID_COLUMNS):
+            angle = np.deg2rad(0.8 * ((row + col) % 2) - 0.3)
+            rotation = np.array([[np.cos(angle), -np.sin(angle), 0],
+                                 [np.sin(angle), np.cos(angle), 0], [0, 0, 1]])
+            shift = np.array([[1, 0, 40 + GRID_STEP_X * col], [0, 1, 40 + GRID_STEP_Y * row],
+                              [0, 0, 1]], dtype=np.float64)
+            frames.append(cv2.warpPerspective(scene, np.linalg.inv(shift @ rotation),
+                                              (FRAME_W, FRAME_H)))
+    return frames
+
+
+def write_folder(folder, frames: List[np.ndarray], order: List[int]) -> str:
+    """Save ``frames[order[0]], frames[order[1]], ...`` as capture-order files 0000, 0001, ..."""
+    folder.mkdir(parents=True, exist_ok=True)
+    for position, index in enumerate(order):
+        cv2.imwrite(str(folder / f"{position:04d}.png"), frames[index])
+    return str(folder)
+
+
+@pytest.fixture(scope="session")
+def grid_frames() -> List[np.ndarray]:
+    return make_grid_frames()

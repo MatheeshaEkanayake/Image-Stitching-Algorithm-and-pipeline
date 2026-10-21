@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { router, useIsFocused } from 'expo-router';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useRef, useState, type ComponentProps } from 'react';
 import { Alert, FlatList, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -12,7 +12,17 @@ import { colors, radius, space } from '@/lib/theme';
 type Shot = { index: number; uri: string; status: 'uploading' | 'done' | 'error'; error?: string };
 
 const MAX_ATTEMPTS = 3;
-const OVERLAP_GUIDE = 0.3; // show the right 30% of the previous photo as an alignment guide
+const OVERLAP_GUIDE = 0.3; // how much of the previous photo is shown as an alignment guide
+
+/** Direction you are moving the camera next; the guide shows the previous photo's overlap edge. */
+type Direction = 'right' | 'left' | 'down' | 'up' | 'off';
+const DIRECTIONS: { key: Direction; icon: ComponentProps<typeof Ionicons>['name']; label: string }[] = [
+  { key: 'right', icon: 'arrow-forward', label: 'Moving right' },
+  { key: 'left', icon: 'arrow-back', label: 'Moving left' },
+  { key: 'down', icon: 'arrow-down', label: 'Moving down' },
+  { key: 'up', icon: 'arrow-up', label: 'Moving up' },
+  { key: 'off', icon: 'eye-off-outline', label: 'Hide guide' },
+];
 
 export default function CaptureScreen() {
   const { api, handleUnauthorized } = useAuth();
@@ -24,7 +34,8 @@ export default function CaptureScreen() {
   const [taking, setTaking] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [guideWidth, setGuideWidth] = useState(0);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const [direction, setDirection] = useState<Direction>('right');
   // One capture per session; created lazily on the first shot. A promise so that quick
   // successive shots all wait for the same capture instead of creating several.
   const captureId = useRef<Promise<string> | null>(null);
@@ -134,7 +145,7 @@ export default function CaptureScreen() {
 
   return (
     <View style={styles.dark}>
-      <View style={styles.preview} onLayout={(e) => setGuideWidth(e.nativeEvent.layout.width)}>
+      <View style={styles.preview} onLayout={(e) => setSize(e.nativeEvent.layout)}>
         {focused ? (
           <CameraView
             ref={camera}
@@ -144,14 +155,11 @@ export default function CaptureScreen() {
             onMountError={(e) => setError(e.message)}
           />
         ) : null}
-        {last && guideWidth > 0 ? (
-          // Ghost of the previous photo's right edge: line it up with the left of the new shot.
-          <View pointerEvents="none" style={[styles.guide, { width: guideWidth * OVERLAP_GUIDE }]}>
-            <Image
-              source={{ uri: last.uri }}
-              style={{ width: guideWidth, height: '100%', marginLeft: -guideWidth * (1 - OVERLAP_GUIDE) }}
-              resizeMode="cover"
-            />
+        {last && direction !== 'off' && size.width > 0 ? (
+          // Ghost of the previous photo's edge on the side you are coming from: line it up with
+          // the same part of the scene in the new shot. Works for rows, columns and snakes.
+          <View pointerEvents="none" style={[styles.guide, guideFrame(direction, size)]}>
+            <Image source={{ uri: last.uri }} style={guideImage(direction, size)} resizeMode="cover" />
           </View>
         ) : null}
         <SafeAreaView edges={['top']} style={styles.topBar}>
@@ -163,9 +171,22 @@ export default function CaptureScreen() {
           </View>
           <Text style={styles.tip}>
             {shots.length === 0
-              ? 'Start at the left. Turn slowly to the right, overlapping each shot by about a third.'
-              : 'Line up the ghost on the left with the scene, then shoot.'}
+              ? 'Start anywhere and cover the whole subject in rows, columns or a snake, in any order. Overlap each shot with its neighbours by about a third. Keep the phone parallel to flat things like boards.'
+              : 'Line the faint ghost up with the same part of the scene, then shoot. Pick the arrow for the way you move next.'}
           </Text>
+          <View style={styles.directions}>
+            {DIRECTIONS.map((d) => (
+              <Pressable
+                key={d.key}
+                accessibilityRole="button"
+                accessibilityLabel={d.label}
+                accessibilityState={{ selected: direction === d.key }}
+                onPress={() => setDirection(d.key)}
+                style={[styles.directionButton, direction === d.key && styles.directionActive]}>
+                <Ionicons name={d.icon} size={20} color={colors.white} />
+              </Pressable>
+            ))}
+          </View>
         </SafeAreaView>
       </View>
 
@@ -223,12 +244,53 @@ export default function CaptureScreen() {
   );
 }
 
+type Size = { width: number; height: number };
+
+/** Where the guide strip sits on the preview: the edge you are moving away from. */
+function guideFrame(direction: Direction, { width, height }: Size) {
+  switch (direction) {
+    case 'right':
+      return { left: 0, top: 0, bottom: 0, width: width * OVERLAP_GUIDE };
+    case 'left':
+      return { right: 0, top: 0, bottom: 0, width: width * OVERLAP_GUIDE };
+    case 'down':
+      return { left: 0, right: 0, top: 0, height: height * OVERLAP_GUIDE };
+    default:
+      return { left: 0, right: 0, bottom: 0, height: height * OVERLAP_GUIDE };
+  }
+}
+
+/** The previous photo, shifted so only its edge nearest the new shot shows in the strip. */
+function guideImage(direction: Direction, { width, height }: Size) {
+  const keep = 1 - OVERLAP_GUIDE;
+  switch (direction) {
+    case 'right':
+      return { width, height, marginLeft: -width * keep };
+    case 'down':
+      return { width, height, marginTop: -height * keep };
+    default:
+      return { width, height }; // left / up: the photo's left / top edge
+  }
+}
+
 const styles = StyleSheet.create({
   dark: { flex: 1, backgroundColor: colors.ink },
   center: { alignItems: 'center', justifyContent: 'center', gap: space.lg, padding: space.xl },
   permissionText: { color: colors.white, fontSize: 16, textAlign: 'center' },
   preview: { flex: 1, overflow: 'hidden' },
-  guide: { position: 'absolute', left: 0, top: 0, bottom: 0, overflow: 'hidden', opacity: 0.38 },
+  guide: { position: 'absolute', overflow: 'hidden', opacity: 0.38 },
+  directions: { flexDirection: 'row', gap: space.sm, alignSelf: 'flex-start' },
+  directionButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(11,18,32,0.6)',
+    borderWidth: 1.5,
+    borderColor: colors.blueBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  directionActive: { backgroundColor: colors.blue, borderColor: colors.white },
   topBar: { position: 'absolute', left: 0, right: 0, top: 0, padding: space.md, gap: space.sm },
   counter: {
     flexDirection: 'row',

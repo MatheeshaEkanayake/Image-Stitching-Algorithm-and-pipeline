@@ -19,8 +19,12 @@ Add `pip install -e ".[dev]"` for pytest and ruff.
 
 ## Usage
 
-Images are read in natural filename order (`img2.jpg` before `img10.jpg`), so name them from
-left to right.
+Photos can be taken in **any order**: rows, columns, a snake pattern, right to left. The
+stitcher matches every pair of photos, builds a graph of which ones overlap, and aligns all of
+them to the best-connected one. Each photo only needs about a third of overlap with at least
+one other photo, and the whole set must be joined by overlaps (otherwise the error lists the
+photos that could not be connected). Files are read in natural filename order
+(`img2.jpg` before `img10.jpg`), which only decides their numbering.
 
 ```bash
 python stitch.py Images/boat Results/boat-panorama.tif        # lossless, recommended
@@ -59,6 +63,7 @@ print(report.to_json())
 | `--detector {sift,orb}` | `sift` | Feature detector (SIFT falls back to ORB if unavailable) |
 | `--ratio` | `0.75` | Lowe ratio-test threshold |
 | `--ransac-thresh` | `4.0` | RANSAC reprojection threshold (px) |
+| `--matching {auto,all,adjacent}` | `auto` | `all` tries every pair of photos (any capture order); `adjacent` only photos within 5 positions of each other in capture order (faster, needs ordered capture); `auto` = `all` up to 30 photos |
 | `--min-matches` | `10` | Minimum good matches per adjacent pair |
 | `--min-inliers` | `15` | Minimum RANSAC inliers per adjacent pair |
 | `--max-area-ratio` | `10.0` | Reject a pair homography that scales an image's area by more than this factor (or its inverse) |
@@ -98,7 +103,7 @@ app in [`mobile/`](mobile/README.md) is its client.
 |-------|---------|
 | `POST /auth/register`, `/auth/login`, `/auth/logout`, `GET /auth/me` | Accounts (scrypt-hashed passwords, bearer session tokens, login throttling) |
 | `POST /captures` | Start a capture |
-| `POST /captures/{id}/photos` | Upload one photo (`index` = left-to-right position, `file`); re-sending an index replaces it |
+| `POST /captures/{id}/photos` | Upload one photo (`index` = position in the shot sequence, `file`); re-sending an index replaces it |
 | `POST /captures/{id}/finish` | All photos uploaded: queue the stitch |
 | `GET /captures`, `GET /captures/{id}` | Your library; one capture with `state` (`capturing`, `queued`, `running`, `done`, `failed`) |
 | `PATCH /captures/{id}` | Rename or share (`{"public": true}`) |
@@ -120,10 +125,13 @@ of old captures yet. `openseadragon.min.js` is vendored from OpenSeadragon 4.1.1
 
 1. **Load** images in natural filename order (optional downscale).
 2. **Detect** SIFT (or ORB) keypoints and descriptors.
-3. **Match** adjacent pairs only, with BFMatcher and the Lowe ratio test.
-4. **Estimate** a RANSAC homography per pair and validate it (inlier count, determinant, area
-   ratio, convexity, corners with w > 0). Failures name the offending pair.
-5. **Chain** to the middle image (the reference). Cylindrical (default): estimate the focal
+3. **Match** every pair of photos (or neighbours only, see `--matching`) with BFMatcher and the
+   Lowe ratio test.
+4. **Estimate** a RANSAC homography per pair and validate it (inlier count, Brown-Lowe overlap
+   test, determinant, area ratio, convexity, corners with w > 0). Pairs that do not overlap are
+   dropped; the rest form an overlap graph, and the run fails (naming the photos) if the graph
+   is not connected.
+5. **Chain** along the maximum spanning tree of that graph to its centre photo (the reference). Cylindrical (default): estimate the focal
    length from the pair homographies, turn them into rotations, chain them, then refine all
    rotations and one shared focal length jointly (bundle adjustment on the RANSAC inliers).
    Planar: chain the homographies directly.

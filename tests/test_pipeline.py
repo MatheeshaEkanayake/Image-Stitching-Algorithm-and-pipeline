@@ -13,13 +13,15 @@ import pytest
 from stitcher import ImageData, PanoramaStitcher, StitchConfig, StitchingError
 from stitcher.blending import blend_images, crop_panorama, warp_images
 from stitcher.cli import main
-from stitcher.features import FeatureMatcher
+from stitcher.features import FeatureMatcher, candidate_pairs
 from stitcher.geometry import (
+    PairResult,
     canvas_geometry,
     estimate_homographies,
     global_transforms,
     image_corners,
     project_points,
+    spanning_tree,
 )
 from stitcher.image_io import natural_sort_key
 
@@ -44,33 +46,72 @@ def test_natural_sort_order():
     assert sorted(names, key=natural_sort_key) == ["img1.jpg", "img2.jpg", "Img3.jpg", "img10.jpg"]
 
 
-def test_adjacent_pair_homography_recovery(frames_and_truth):
+def test_pair_homography_recovery(frames_and_truth):
     frames, scene_from_frame = frames_and_truth
     images = images_from(frames)
     config = StitchConfig()
     matcher = FeatureMatcher(config)
     matcher.detect(images)
-    pairs = estimate_homographies(images, matcher.match_adjacent(images), config)
-    assert len(pairs) == len(frames) - 1
+    pairs = estimate_homographies(images, matcher.match(images), config)
+    found = {(p.i, p.j) for p in pairs}
+    assert {(0, 1), (1, 2), (2, 3)} <= found  # neighbours overlap by ~46%
     for pair in pairs:
-        # H maps frame i+1 -> frame i; truth = inv(G_i) @ G_{i+1}
-        truth = np.linalg.inv(scene_from_frame[pair.index]) @ scene_from_frame[pair.index + 1]
+        # H maps frame j -> frame i; truth = inv(G_i) @ G_j
+        truth = np.linalg.inv(scene_from_frame[pair.i]) @ scene_from_frame[pair.j]
         assert corner_error(pair.homography, truth) < 2.0
         assert pair.inliers >= config.min_inliers
+
+
+def _truth_pairs(scene_from_frame, edges):
+    return [
+        PairResult(i, j, np.linalg.inv(scene_from_frame[i]) @ scene_from_frame[j], 100, 90)
+        for i, j in edges
+    ]
 
 
 def test_global_chain_composition(frames_and_truth):
     _, scene_from_frame = frames_and_truth
     count = len(scene_from_frame)
-    pairwise = [
-        np.linalg.inv(scene_from_frame[i]) @ scene_from_frame[i + 1] for i in range(count - 1)
-    ]
-    transforms, reference = global_transforms(pairwise, count)
-    assert reference == count // 2
+    pairs = _truth_pairs(scene_from_frame, [(0, 1), (1, 2), (2, 3)])
+    transforms, reference = global_transforms(pairs, count)
+    assert reference in (1, 2)  # centre of the chain
     assert np.allclose(transforms[reference], np.eye(3))
     for i in range(count):
         truth = np.linalg.inv(scene_from_frame[reference]) @ scene_from_frame[i]
         assert corner_error(transforms[i], truth) < 1e-6
+
+
+def test_chain_does_not_depend_on_pair_order_or_direction(frames_and_truth):
+    """The same overlap graph in any order gives the same placement of every image."""
+    _, scene_from_frame = frames_and_truth
+    edges = [(0, 1), (1, 2), (2, 3), (0, 2)]
+    base, ref = global_transforms(_truth_pairs(scene_from_frame, edges), 4)
+    shuffled, ref2 = global_transforms(_truth_pairs(scene_from_frame, edges[::-1]), 4)
+    for i in range(4):
+        truth = np.linalg.inv(scene_from_frame[ref]) @ scene_from_frame[i]
+        assert corner_error(base[i], truth) < 1e-6
+        truth2 = np.linalg.inv(scene_from_frame[ref2]) @ scene_from_frame[i]
+        assert corner_error(shuffled[i], truth2) < 1e-6
+
+
+def test_spanning_tree_prefers_strong_pairs_and_names_unconnected_photos():
+    def pair(i, j, inliers):
+        return PairResult(i, j, np.eye(3), inliers + 10, inliers)
+
+    tree = spanning_tree([pair(0, 1, 50), pair(1, 2, 200), pair(0, 2, 300)], 3)
+    assert {(p.i, p.j) for p in tree} == {(0, 2), (1, 2)}  # drops the weakest edge of the loop
+    with pytest.raises(StitchingError, match=r"photo numbers: 1, 2 \| 3, 4"):
+        spanning_tree([pair(0, 1, 50), pair(2, 3, 60)], 4)
+    with pytest.raises(StitchingError, match=r"\| 3"):
+        spanning_tree([pair(0, 1, 50)], 3)
+
+
+def test_candidate_pairs_modes():
+    assert len(candidate_pairs(6, StitchConfig(matching="all"))) == 15
+    adjacent = candidate_pairs(10, StitchConfig(matching="adjacent", match_window=2))
+    assert (0, 2) in adjacent and (0, 3) not in adjacent
+    assert len(candidate_pairs(30, StitchConfig())) == 435  # auto: all pairs up to 30 photos
+    assert (0, 29) not in candidate_pairs(31, StitchConfig())  # beyond that: neighbours only
 
 
 def test_canvas_geometry_bounds_all_corners():
@@ -167,9 +208,9 @@ def test_end_to_end_with_report(frame_folder, frames_and_truth):
     config = StitchConfig(projection="planar")
     panorama, report = PanoramaStitcher(config).stitch_with_report(frame_folder)
     assert panorama.shape[1] > FRAME_W * 2
-    assert report.reference_index == 2
-    assert len(report.pairs) == 3
-    assert [p.index for p in report.pairs] == [0, 1, 2]
+    assert report.reference_index in (1, 2)
+    assert {(p.a, p.b) for p in report.pairs} >= {(0, 1), (1, 2), (2, 3)}
+    assert report.pairs_tried == 6  # 4 photos: every pair is tried
     expected_width = scene_from_frame[-1][0, 2] - scene_from_frame[0][0, 2] + FRAME_W
     assert abs(report.canvas_size[0] - expected_width) < 0.15 * expected_width
     # stitch() returns the same pixels
@@ -183,7 +224,7 @@ def test_report_schema(frame_folder):
     )
     data = json.loads(report.to_json())
     expected_keys = {
-        "image_names", "image_sizes", "detector", "keypoints", "pairs", "projection",
+        "image_names", "image_sizes", "detector", "keypoints", "pairs_tried", "pairs", "projection",
         "reference_index",
         "focal_length", "canvas_size", "canvas_megapixels", "output_size", "timings_s",
         "peak_memory_mb", "config",
@@ -192,7 +233,7 @@ def test_report_schema(frame_folder):
     assert data["image_names"] == ["frame1.png", "frame2.png", "frame3.png", "frame4.png"]
     assert data["image_sizes"] == [[FRAME_W, FRAME_H]] * 4
     assert len(data["keypoints"]) == 4 and all(k > 0 for k in data["keypoints"])
-    assert set(data["pairs"][0]) == {"index", "matches", "inliers", "inlier_ratio"}
+    assert set(data["pairs"][0]) == {"a", "b", "matches", "inliers", "inlier_ratio"}
     assert 0 < data["pairs"][0]["inlier_ratio"] <= 1
     stages = {"load", "detect", "match", "homography", "canvas", "warp_blend", "crop", "total"}
     assert stages <= set(data["timings_s"])
@@ -232,12 +273,12 @@ def test_unknown_blend_mode_rejected(frame_folder, tmp_path):
         StitchConfig(blend_mode="poisson")
 
 
-def test_unrelated_images_give_clear_pair_error(tmp_path):
+def test_unrelated_images_give_clear_error(tmp_path):
     rng = np.random.default_rng(0)
     for i in range(2):
         noise = cv2.GaussianBlur(rng.integers(0, 255, (240, 320, 3), dtype=np.uint8), (0, 0), 2)
         cv2.imwrite(str(tmp_path / f"p{i}.png"), noise)
-    with pytest.raises(StitchingError, match=r"images 0 and 1"):
+    with pytest.raises(StitchingError, match=r"do not overlap each other"):
         PanoramaStitcher(StitchConfig()).stitch(str(tmp_path))
 
 
@@ -271,7 +312,7 @@ def test_cylindrical_focal_and_canvas_on_rotation_frames(rotation_folder):
     half_fov = np.arctan(FRAME_W / 2 / ROT_FOCAL)
     expected_width = ROT_FOCAL * (np.deg2rad(3 * ROT_STEP_DEG) + 2 * half_fov)
     assert abs(report.canvas_size[0] - expected_width) / expected_width < 0.08
-    assert report.reference_index == 2
+    assert report.reference_index in (1, 2)
     assert panorama.shape[0] > 0.8 * FRAME_H
 
 
@@ -303,7 +344,7 @@ def test_bundle_adjustment_reduces_reprojection_error(rotation_folder):
     config = StitchConfig()
     matcher = FeatureMatcher(config)
     matcher.detect(images)
-    pairs = estimate_homographies(images, matcher.match_adjacent(images), config)
+    pairs = estimate_homographies(images, matcher.match(images), config)
     refined = CylindricalProjection(images, pairs, config)
     plain = CylindricalProjection(images, pairs, StitchConfig(bundle_adjust=False))
     from .conftest import ROT_FOCAL
@@ -361,13 +402,13 @@ def test_bundle_adjustment_recovers_pair_with_large_initial_error():
         world = rays @ true[i + 1].T  # points of image i+1 in the reference frame
         in_i = world @ true[i]  # = (true[i].T @ world) for row vectors
         dst = np.stack([f * in_i[:, 0] / in_i[:, 2] + 320, f * in_i[:, 1] / in_i[:, 2] + 240], 1)
-        pairs.append(PairResult(i, np.eye(3), 200, 200, pts, dst))
+        pairs.append(PairResult(i, i + 1, np.eye(3), 200, 200, pts, dst))
     # camera 0 starts ~5 degrees off in pitch/yaw/roll, i.e. well beyond the final 5 px threshold
     off = cv2.Rodrigues(np.deg2rad([5.0, 4.0, 3.0]))[0]
     start = [off @ true[0], true[1], true[2]]
-    refined, _, worst = refine_cameras(pairs, start, 1, f, sizes, fix_focal=True)
+    refined, _, improved = refine_cameras(pairs, start, 1, f, sizes, fix_focal=True)
     error = np.degrees(np.linalg.norm(cv2.Rodrigues(refined[0] @ true[0].T)[0]))
-    assert error < 0.1 and worst < 0.1
+    assert error < 0.1 and improved
 
 
 def test_cli_writes_lossless_tiff(frame_folder, tmp_path):
@@ -405,3 +446,56 @@ def test_explicit_projection_is_respected(rotation_folder):
         rotation_folder
     )
     assert report.projection == "planar"
+
+
+GRID_ORDERS = {
+    "row_by_row": [0, 1, 2, 3, 4, 5],
+    "snake": [0, 1, 2, 5, 4, 3],  # along the top row, then back along the bottom row
+    "right_to_left": [5, 4, 3, 2, 1, 0],
+    "shuffled": [4, 0, 5, 2, 3, 1],
+}
+
+
+@pytest.mark.parametrize("name", list(GRID_ORDERS))
+def test_grid_capture_in_any_order(name, grid_frames, tmp_path):
+    from .conftest import GRID_STEP_X, GRID_STEP_Y, write_folder
+
+    folder = write_folder(tmp_path / name, grid_frames, GRID_ORDERS[name])
+    panorama, report = PanoramaStitcher(StitchConfig()).stitch_with_report(folder)
+    # a 3 x 2 grid is ~1000 x ~510 px; a wrong placement would be much wider or taller
+    assert abs(panorama.shape[1] - (2 * GRID_STEP_X + FRAME_W)) < 0.06 * 1000, name
+    assert abs(panorama.shape[0] - (GRID_STEP_Y + FRAME_H)) < 0.08 * 510, name
+    assert len(report.pairs) >= 7  # horizontal AND vertical neighbours were found
+
+
+def test_grid_result_is_independent_of_capture_order(grid_frames, tmp_path):
+    from .conftest import write_folder
+
+    sizes = {}
+    for name, order in GRID_ORDERS.items():
+        folder = write_folder(tmp_path / name, grid_frames, order)
+        _, report = PanoramaStitcher(StitchConfig(seed=1)).stitch_with_report(folder)
+        sizes[name] = report.canvas_size
+    widths = [w for w, _ in sizes.values()]
+    heights = [h for _, h in sizes.values()]
+    assert max(widths) - min(widths) < 0.05 * min(widths), sizes
+    assert max(heights) - min(heights) < 0.05 * min(heights), sizes
+
+
+def test_unconnected_photo_is_reported_by_number(frame_folder, tmp_path):
+    import shutil
+
+    folder = tmp_path / "with_stranger"
+    shutil.copytree(frame_folder, folder)
+    rng = np.random.default_rng(9)
+    stranger = cv2.GaussianBlur(rng.integers(0, 255, (360, 480, 3), dtype=np.uint8), (0, 0), 2)
+    cv2.imwrite(str(folder / "frame9.png"), stranger)  # sorts last: photo number 5
+    with pytest.raises(StitchingError, match=r"photo numbers: 1, 2, 3, 4 \| 5"):
+        PanoramaStitcher(StitchConfig()).stitch(str(folder))
+
+
+def test_adjacent_matching_mode_still_works_in_order(frame_folder):
+    _, report = PanoramaStitcher(
+        StitchConfig(matching="adjacent", match_window=1)
+    ).stitch_with_report(frame_folder)
+    assert report.pairs_tried == 3

@@ -22,14 +22,15 @@ _MIN_ABS_DET = 1e-6
 
 @dataclass
 class PairResult:
-    """Validated registration of image ``index + 1`` onto image ``index``."""
+    """Validated registration of image ``j`` onto image ``i`` (0-based, ``i < j``)."""
 
-    index: int
-    homography: np.ndarray
+    i: int
+    j: int
+    homography: np.ndarray  # maps pixels of image j to pixels of image i
     matches: int
     inliers: int
-    points_src: Optional[np.ndarray] = None  # (inliers, 2) pixels in image index + 1
-    points_dst: Optional[np.ndarray] = None  # (inliers, 2) matching pixels in image index
+    points_src: Optional[np.ndarray] = None  # (inliers, 2) pixels in image j
+    points_dst: Optional[np.ndarray] = None  # (inliers, 2) matching pixels in image i
 
     @property
     def inlier_ratio(self) -> float:
@@ -96,53 +97,45 @@ def validate_homography(
 
 def estimate_homographies(
     images: List[ImageData],
-    matches_by_pair: Dict[int, List[cv2.DMatch]],
+    matches_by_pair: Dict[Tuple[int, int], List[cv2.DMatch]],
     config: StitchConfig,
 ) -> List[PairResult]:
-    """Estimate and validate the homography mapping image i+1 onto image i for every pair."""
+    """Register every candidate pair that really overlaps.
+
+    A pair that has too few matches or inliers, or whose homography is implausible, is simply
+    not an overlapping pair and is skipped (most pairs of a grid capture do not overlap).
+    Whether the images are connected as a whole is checked by :func:`spanning_tree`.
+    """
     results: List[PairResult] = []
-    for index in range(len(images) - 1):
-        pair = f"images {index} and {index + 1}"
-        matches = matches_by_pair.get(index, [])
+    for (i, j), matches in sorted(matches_by_pair.items()):
         if len(matches) < config.min_matches:
-            raise StitchingError(
-                f"Insufficient matches between {pair}: got {len(matches)}, "
-                f"need >= {config.min_matches}."
-            )
-        kp_src, kp_dst = images[index + 1].keypoints, images[index].keypoints
+            continue
+        kp_src, kp_dst = images[j].keypoints, images[i].keypoints
         assert kp_src is not None and kp_dst is not None
         points_src = np.float32([kp_src[m.trainIdx].pt for m in matches]).reshape(-1, 1, 2)
         points_dst = np.float32([kp_dst[m.queryIdx].pt for m in matches]).reshape(-1, 1, 2)
         homography, inlier_mask = cv2.findHomography(
             points_src, points_dst, cv2.RANSAC, config.ransac_reproj_threshold
         )
-        if homography is None:
-            raise StitchingError(f"cv2.findHomography failed for {pair}.")
-        inliers = int(inlier_mask.sum()) if inlier_mask is not None else 0
-        logger.info(
-            "Pair (%d, %d): RANSAC inliers %d/%d (%.1f%%)",
-            index,
-            index + 1,
-            inliers,
-            len(matches),
-            100 * inliers / max(len(matches), 1),
-        )
-        if inliers < config.min_inliers:
-            raise StitchingError(
-                f"Too few RANSAC inliers between {pair}: got {inliers} of {len(matches)} "
-                f"matches, need >= {config.min_inliers}."
-            )
-        height, width = images[index + 1].image.shape[:2]
+        if homography is None or inlier_mask is None:
+            continue
+        inliers = int(inlier_mask.sum())
+        # Brown & Lowe's test: genuine overlaps have clearly more inliers than chance.
+        if inliers < config.min_inliers or inliers < 5.9 + 0.22 * len(matches):
+            logger.info("Pair (%d, %d): %d inliers of %d matches; not overlapping.",
+                        i, j, inliers, len(matches))
+            continue
+        height, width = images[j].image.shape[:2]
         problem = validate_homography(homography, width, height, config)
         if problem:
-            raise StitchingError(f"Implausible homography between {pair}: {problem}.")
+            logger.warning("Pair (%d, %d) ignored: implausible homography (%s).", i, j, problem)
+            continue
+        logger.info("Pair (%d, %d): RANSAC inliers %d/%d (%.1f%%)", i, j, inliers,
+                    len(matches), 100 * inliers / len(matches))
         keep = inlier_mask.ravel().astype(bool)
         results.append(
             PairResult(
-                index,
-                homography,
-                len(matches),
-                inliers,
+                i, j, homography, len(matches), inliers,
                 points_src[keep].reshape(-1, 2).astype(np.float64),
                 points_dst[keep].reshape(-1, 2).astype(np.float64),
             )
@@ -150,21 +143,86 @@ def estimate_homographies(
     return results
 
 
-def global_transforms(
-    homographies: Sequence[np.ndarray], image_count: int
-) -> Tuple[List[np.ndarray], int]:
-    """Chain pairwise homographies into transforms onto the middle (reference) image.
+def spanning_tree(pairs: Sequence[PairResult], image_count: int) -> List[PairResult]:
+    """Maximum spanning tree of the overlap graph (edge weight = RANSAC inliers).
 
-    ``homographies[i]`` maps image i+1 onto image i. Returns one 3x3 matrix per image
-    (image i -> reference frame) and the reference index.
+    Raises StitchingError, naming the photos (1-based, as in the app), if some images cannot
+    be connected to the others through overlapping pairs.
     """
-    reference = image_count // 2
-    transforms = [np.eye(3, dtype=np.float64) for _ in range(image_count)]
-    for index in range(reference + 1, image_count):
-        transforms[index] = transforms[index - 1] @ homographies[index - 1]
-    for index in range(reference - 1, -1, -1):
-        transforms[index] = transforms[index + 1] @ np.linalg.inv(homographies[index])
-    return transforms, reference
+    parent = list(range(image_count))
+
+    def find(node: int) -> int:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    tree: List[PairResult] = []
+    for pair in sorted(pairs, key=lambda p: -p.inliers):
+        root_i, root_j = find(pair.i), find(pair.j)
+        if root_i != root_j:
+            parent[root_i] = root_j
+            tree.append(pair)
+    if len(tree) != image_count - 1:
+        groups: Dict[int, List[int]] = {}
+        for node in range(image_count):
+            groups.setdefault(find(node), []).append(node + 1)
+        parts = " | ".join(", ".join(map(str, g)) for g in groups.values())
+        raise StitchingError(
+            f"The photos split into groups that do not overlap each other (photo numbers: "
+            f"{parts}). Each photo needs about a third of overlap with at least one other "
+            "photo, and the whole set must be joined by overlaps; retake the missing shots."
+        )
+    return tree
+
+
+def chain_transforms(
+    edges: Sequence[Tuple[int, int, np.ndarray]], image_count: int
+) -> Tuple[List[np.ndarray], int]:
+    """Transform of every image onto a reference image, chained along tree ``edges``.
+
+    Each edge ``(a, b, M)`` has ``M`` mapping image b onto image a (a homography or a
+    rotation). The reference is the centre of the tree (fewest hops to the farthest image),
+    which keeps chained error and distortion lowest whatever order the photos were taken in.
+    Returns one 3x3 matrix per image and the reference index.
+    """
+    neighbours: Dict[int, List[Tuple[int, np.ndarray]]] = {n: [] for n in range(image_count)}
+    for a, b, matrix in edges:
+        neighbours[a].append((b, matrix))  # reaching b from a: T[b] = T[a] @ M
+        neighbours[b].append((a, np.linalg.inv(matrix)))
+
+    def hops(start: int) -> Dict[int, int]:
+        distance = {start: 0}
+        queue = [start]
+        for node in queue:
+            for other, _ in neighbours[node]:
+                if other not in distance:
+                    distance[other] = distance[node] + 1
+                    queue.append(other)
+        return distance
+
+    middle = (image_count - 1) / 2
+    reference = min(
+        range(image_count),
+        key=lambda n: (max(hops(n).values()), sum(hops(n).values()), abs(n - middle)),
+    )
+    transforms: List[Optional[np.ndarray]] = [None] * image_count
+    transforms[reference] = np.eye(3, dtype=np.float64)
+    queue = [reference]
+    for node in queue:
+        for other, matrix in neighbours[node]:
+            if transforms[other] is None:
+                transforms[other] = transforms[node] @ matrix
+                queue.append(other)
+    return [t for t in transforms if t is not None], reference
+
+
+def global_transforms(
+    pairs: Sequence[PairResult], image_count: int
+) -> Tuple[List[np.ndarray], int]:
+    """Homography of every image onto the reference image (see :func:`chain_transforms`)."""
+    tree = spanning_tree(pairs, image_count)
+    return chain_transforms([(p.i, p.j, p.homography) for p in tree], image_count)
 
 
 def canvas_geometry(

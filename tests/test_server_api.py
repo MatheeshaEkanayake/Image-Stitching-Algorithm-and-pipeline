@@ -175,7 +175,7 @@ def test_private_until_shared_and_failure_reported(client, rotation_folder, tmp_
     bad = capture_photos(client, alice, str(noise_dir), count=2)
     client.post(f"/captures/{bad}/finish", headers=alice, json={})
     failed = wait_done(client, alice, bad)
-    assert failed["state"] == "failed" and "images 0 and 1" in failed["error"]
+    assert failed["state"] == "failed" and "do not overlap each other" in failed["error"]
     assert client.patch(f"/captures/{bad}", headers=alice,
                         json={"public": True}).status_code == 409
 

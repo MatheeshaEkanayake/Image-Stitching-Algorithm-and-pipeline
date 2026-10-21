@@ -10,7 +10,7 @@ from typing import List, Optional
 
 import cv2
 
-from stitcher.models import BLEND_MODES, PROJECTIONS, StitchConfig, StitchingError
+from stitcher.models import BLEND_MODES, MATCHINGS, PROJECTIONS, StitchConfig, StitchingError
 from stitcher.panorama_stitcher import PanoramaStitcher
 from stitcher.tiles import build_tile_pyramid
 
@@ -30,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Lowe ratio-test threshold.")
     parser.add_argument("--ransac-thresh", type=float, default=defaults.ransac_reproj_threshold,
                         help="RANSAC reprojection threshold in pixels.")
+    parser.add_argument("--matching", choices=list(MATCHINGS), default=defaults.matching,
+                        help="Which photo pairs to match: all (any capture order), adjacent "
+                             "(neighbours in capture order only), or auto (all up to "
+                             f"{defaults.max_all_pairs_images} photos).")
     parser.add_argument("--min-matches", type=int, default=defaults.min_matches,
                         help="Minimum good matches per adjacent pair.")
     parser.add_argument("--min-inliers", type=int, default=defaults.min_inliers,
@@ -84,6 +88,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             feature_detector=args.detector.upper(),
             ratio_threshold=args.ratio,
             ransac_reproj_threshold=args.ransac_thresh,
+            matching=args.matching,
             min_matches=args.min_matches,
             min_inliers=args.min_inliers,
             max_area_ratio=args.max_area_ratio,
