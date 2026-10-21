@@ -33,7 +33,8 @@
           "barcodeScannerEnabled": false
         }
       ],
-      "expo-font"
+      "expo-font",
+      "expo-status-bar"
     ],
     "scheme": "panostitch",
     "experiments": {

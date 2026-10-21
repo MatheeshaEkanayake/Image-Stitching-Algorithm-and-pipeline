@@ -1,6 +1,6 @@
 # PanoStitch mobile app
 
-React Native (Expo SDK 58, Expo Router) client for the stitching server in `../stitcher/server`.
+React Native (Expo SDK 57, Expo Router) client for the stitching server in `../stitcher/server`.
 
 - **Capture**: take overlapping photos left to right; each one uploads in the background the
   moment it is taken (with retries). A ghost of the previous photo's right edge helps you line up
