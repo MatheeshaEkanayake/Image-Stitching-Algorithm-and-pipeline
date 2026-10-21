@@ -33,8 +33,10 @@ React Native (Expo SDK 57, Expo Router) client for the stitching server in `../s
    Scan the QR code with **Expo Go** (Android/iOS). All native modules used (camera, secure
    store, WebView) are included in Expo Go, so no custom build is needed for development.
 
-3. On the sign-in screen enter the computer's LAN address, e.g. `192.168.1.20:8000`, then create
-   an account.
+3. Tell the app where the server is once, so nobody has to type it when signing up. Create
+   `mobile/.env` with `EXPO_PUBLIC_SERVER_URL=http://192.168.1.20:8000` (the computer's LAN
+   address) and restart `npx expo start`. If it is not set, the sign-in screen shows a server
+   address field; otherwise it is behind **Connection settings**.
 
 ## Checks
 

@@ -132,7 +132,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: 'rgba(30,111,255,0.9)',
+    backgroundColor: colors.glass,
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: radius.pill,

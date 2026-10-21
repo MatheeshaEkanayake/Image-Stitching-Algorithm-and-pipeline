@@ -12,10 +12,12 @@ export default function MeScreen() {
   return (
     <ScrollView style={{ backgroundColor: colors.bg }} contentContainerStyle={styles.content}>
       <Card style={styles.header}>
-        <Avatar name={user.username} size={72} />
+        <Avatar name={user.username} size={80} />
         <Text style={styles.name}>{user.username}</Text>
         <Text style={styles.server}>Connected to {serverUrl}</Text>
       </Card>
+
+      <Text style={styles.heading}>Profile</Text>
       <Button
         title="My public profile"
         icon="person-outline"
@@ -23,7 +25,11 @@ export default function MeScreen() {
         onPress={() => router.push({ pathname: '/user/[username]', params: { username: user.username } })}
       />
       <Button title="Write a post" icon="create-outline" variant="secondary" onPress={() => router.push('/post/new')} />
-      <View style={{ height: space.lg }} />
+
+      <Text style={styles.heading}>Tutorial</Text>
+      <Button title="How to capture a panorama" icon="school-outline" variant="secondary" onPress={() => router.push('/tutorial')} />
+
+      <View style={{ height: space.md }} />
       <Button title="Sign out" icon="log-out-outline" variant="danger" onPress={signOut} />
     </ScrollView>
   );
@@ -31,7 +37,8 @@ export default function MeScreen() {
 
 const styles = StyleSheet.create({
   content: { padding: space.lg, gap: space.md },
-  header: { alignItems: 'center', gap: space.sm, borderTopWidth: 4, borderTopColor: colors.blue },
-  name: { fontSize: 22, fontWeight: '800', color: colors.text },
+  header: { alignItems: 'center', gap: space.sm, paddingVertical: space.xl },
+  name: { fontSize: 24, fontWeight: '800', color: colors.text },
   server: { fontSize: 13, color: colors.muted },
+  heading: { fontSize: 12, fontWeight: '800', letterSpacing: 1, color: colors.muted, textTransform: 'uppercase', marginTop: space.sm },
 });

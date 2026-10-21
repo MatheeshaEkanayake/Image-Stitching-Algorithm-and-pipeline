@@ -18,7 +18,8 @@ function RootStack() {
   return (
     <Stack
       screenOptions={{
-        headerStyle: { backgroundColor: colors.blue },
+        headerStyle: { backgroundColor: colors.bg },
+        headerShadowVisible: false,
         headerTintColor: colors.white,
         headerTitleStyle: { fontWeight: '700' },
         contentStyle: { backgroundColor: colors.bg },
@@ -30,6 +31,7 @@ function RootStack() {
         <Stack.Screen name="post/[id]" options={{ title: 'Post' }} />
         <Stack.Screen name="post/new" options={{ title: 'New post', presentation: 'modal' }} />
         <Stack.Screen name="user/[username]" options={{ title: 'Profile' }} />
+        <Stack.Screen name="tutorial" options={{ title: 'Tutorial' }} />
       </Stack.Protected>
       <Stack.Protected guard={!signedIn}>
         <Stack.Screen name="login" options={{ headerShown: false }} />

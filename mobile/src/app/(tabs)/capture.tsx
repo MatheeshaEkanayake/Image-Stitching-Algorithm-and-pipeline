@@ -1,14 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { router, useIsFocused } from 'expo-router';
-import * as SecureStore from 'expo-secure-store';
-import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
-import { Alert, FlatList, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { router, useIsFocused, usePathname } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, AppState, FlatList, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { CameraGrid, LevelBadge, useLevel } from '@/components/camera-overlays';
+import { CameraGrid, CameraRuler, LevelCross } from '@/components/camera-overlays';
+import { CameraSettingsSheet } from '@/components/camera-settings-sheet';
 import { Button, ErrorBanner } from '@/components/ui';
 import { errorMessage, useAuth } from '@/lib/auth';
+import { useCameraSettings, type GuideSide } from '@/lib/camera-settings';
 import { colors, radius, space } from '@/lib/theme';
 
 type Shot = { index: number; uri: string; status: 'uploading' | 'done' | 'error'; error?: string };
@@ -17,45 +18,45 @@ const MAX_ATTEMPTS = 3;
 // How much of the previous photo is shown as an alignment guide: one third, so the guide's
 // edge sits on a grid line and the recommended overlap is easy to judge.
 const OVERLAP_GUIDE = 1 / 3;
-const GRID_PREF = 'camera_grid';
-
-/** Direction you are moving the camera next; the guide shows the previous photo's overlap edge. */
-type Direction = 'right' | 'left' | 'down' | 'up' | 'off';
-const DIRECTIONS: { key: Direction; icon: ComponentProps<typeof Ionicons>['name']; label: string }[] = [
-  { key: 'right', icon: 'arrow-forward', label: 'Moving right' },
-  { key: 'left', icon: 'arrow-back', label: 'Moving left' },
-  { key: 'down', icon: 'arrow-down', label: 'Moving down' },
-  { key: 'up', icon: 'arrow-up', label: 'Moving up' },
-  { key: 'off', icon: 'eye-off-outline', label: 'Hide guide' },
-];
 
 export default function CaptureScreen() {
   const { api, handleUnauthorized } = useAuth();
-  const focused = useIsFocused();
+  const tabFocused = useIsFocused();
+  const pathname = usePathname();
+  // The tab stays "focused" while the panorama page is pushed on top of it, so also look at the
+  // route: the camera is only live (and mounted) when this screen is really the one on show.
+  const onScreen = tabFocused && pathname === '/capture';
+  const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+  const cameraLive = onScreen && appActive;
+
   const [permission, requestPermission] = useCameraPermissions();
   const camera = useRef<CameraView>(null);
   const [cameraReady, setCameraReady] = useState(false);
+  const [cameraKey, setCameraKey] = useState(0);
   const [shots, setShots] = useState<Shot[]>([]);
   const [taking, setTaking] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const [direction, setDirection] = useState<Direction>('right');
-  const [gridOn, setGridOn] = useState(true);
-  const level = useLevel(focused && gridOn);
+  const [settings, updateSettings] = useCameraSettings();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
-    SecureStore.getItemAsync(GRID_PREF).then(
-      (value) => value !== null && setGridOn(value === '1'),
-      () => undefined,
-    );
+    const sub = AppState.addEventListener('change', (state) => setAppActive(state === 'active'));
+    return () => sub.remove();
   }, []);
 
-  function toggleGrid() {
-    const next = !gridOn;
-    setGridOn(next);
-    SecureStore.setItemAsync(GRID_PREF, next ? '1' : '0').catch(() => undefined);
-  }
+  // Every time the camera comes back (from the panorama page, another tab, or the background)
+  // mount a fresh CameraView: a camera surface that was kept alive underneath another screen
+  // can come back half black, and the old "ready" flag no longer applies to the new view.
+  useEffect(() => {
+    if (cameraLive) {
+      setCameraKey((k) => k + 1);
+    } else {
+      setCameraReady(false);
+    }
+  }, [cameraLive]);
+
   // One capture per session; created lazily on the first shot. A promise so that quick
   // successive shots all wait for the same capture instead of creating several.
   const captureId = useRef<Promise<string> | null>(null);
@@ -151,8 +152,11 @@ export default function CaptureScreen() {
   if (!permission.granted) {
     return (
       <SafeAreaView style={[styles.dark, styles.center]}>
-        <Ionicons name="camera-outline" size={48} color={colors.white} />
-        <Text style={styles.permissionText}>Camera access is needed to capture panorama photos.</Text>
+        <View style={styles.permissionIcon}>
+          <Ionicons name="camera-outline" size={40} color={colors.blueDark} />
+        </View>
+        <Text style={styles.permissionTitle}>Camera access</Text>
+        <Text style={styles.permissionText}>PanoStitch needs the camera to capture your overlapping panorama photos.</Text>
         <Button title="Allow camera" icon="checkmark" onPress={requestPermission} />
       </SafeAreaView>
     );
@@ -164,63 +168,54 @@ export default function CaptureScreen() {
   const last = shots[shots.length - 1];
 
   return (
-    <View style={styles.dark}>
-      <View style={styles.preview} onLayout={(e) => setSize(e.nativeEvent.layout)}>
-        {focused ? (
-          <CameraView
-            ref={camera}
-            style={StyleSheet.absoluteFill}
-            facing="back"
-            onCameraReady={() => setCameraReady(true)}
-            onMountError={(e) => setError(e.message)}
-          />
+    <View style={styles.dark} onLayout={(e) => setSize(e.nativeEvent.layout)}>
+      {/* The camera and its overlays fill the whole screen; the controls float above them, so
+          nothing depends on how a flex layout splits the space around the camera surface. */}
+      {cameraLive ? (
+        <CameraView
+          key={cameraKey}
+          ref={camera}
+          style={StyleSheet.absoluteFill}
+          facing="back"
+          onCameraReady={() => setCameraReady(true)}
+          onMountError={(e) => setError(e.message)}
+        />
+      ) : null}
+      {settings.grid ? <CameraGrid /> : null}
+      {settings.ruler ? <CameraRuler /> : null}
+      {last && settings.guide && size.width > 0 ? (
+        // Ghost of the previous photo's edge: line it up with the same part of the scene in the
+        // new shot. Works for rows, columns and snakes.
+        <View
+          pointerEvents="none"
+          style={[styles.guide, guideFrame(settings.guideSide, size), { opacity: settings.guideOpacity }]}>
+          <Image source={{ uri: last.uri }} style={guideImage(settings.guideSide, size)} resizeMode="cover" />
+          <View style={[styles.guideEdge, guideEdge(settings.guideSide)]} />
+        </View>
+      ) : null}
+      {settings.level ? <LevelCross active={cameraLive} /> : null}
+
+      <SafeAreaView edges={['top']} style={styles.topBar} pointerEvents="box-none">
+        <View style={styles.topRow}>
+          <View style={styles.counter}>
+            <Ionicons name="images" size={14} color={colors.white} />
+            <Text style={styles.counterText}>
+              {shots.length} {shots.length === 1 ? 'photo' : 'photos'}
+              {shots.length ? ` · ${uploaded} uploaded` : ''}
+            </Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Capture settings"
+            onPress={() => setSettingsOpen(true)}
+            style={styles.iconButton}>
+            <Ionicons name="options-outline" size={22} color={colors.white} />
+          </Pressable>
+        </View>
+        {shots.length === 0 ? (
+          <Text style={styles.tip}>Overlap each shot with its neighbour by about a third.</Text>
         ) : null}
-        {gridOn ? <CameraGrid /> : null}
-        {last && direction !== 'off' && size.width > 0 ? (
-          // Ghost of the previous photo's edge on the side you are coming from: line it up with
-          // the same part of the scene in the new shot. Works for rows, columns and snakes.
-          <View pointerEvents="none" style={[styles.guide, guideFrame(direction, size)]}>
-            <Image source={{ uri: last.uri }} style={guideImage(direction, size)} resizeMode="cover" />
-          </View>
-        ) : null}
-        <SafeAreaView edges={['top']} style={styles.topBar}>
-          <View style={styles.badges}>
-            <View style={styles.counter}>
-              <Ionicons name="images" size={14} color={colors.white} />
-              <Text style={styles.counterText}>
-                {shots.length} taken · {uploaded} uploaded
-              </Text>
-            </View>
-            <LevelBadge level={level} />
-          </View>
-          <Text style={styles.tip}>
-            {shots.length === 0
-              ? 'Start anywhere and cover the whole subject in rows, columns or a snake, in any order. Overlap each shot with its neighbours by about a third. Tap the grid button to show the grid and level; for flat things like boards, keep the phone parallel until the badge turns green.'
-              : 'Line the faint ghost up with the same part of the scene, then shoot. Pick the arrow for the way you move next.'}
-          </Text>
-          <View style={styles.directions}>
-            <Pressable
-              accessibilityRole="switch"
-              accessibilityLabel="Grid and level"
-              accessibilityState={{ checked: gridOn }}
-              onPress={toggleGrid}
-              style={[styles.directionButton, gridOn && styles.directionActive, { marginRight: space.sm }]}>
-              <Ionicons name="grid-outline" size={20} color={colors.white} />
-            </Pressable>
-            {DIRECTIONS.map((d) => (
-              <Pressable
-                key={d.key}
-                accessibilityRole="button"
-                accessibilityLabel={d.label}
-                accessibilityState={{ selected: direction === d.key }}
-                onPress={() => setDirection(d.key)}
-                style={[styles.directionButton, direction === d.key && styles.directionActive]}>
-                <Ionicons name={d.icon} size={20} color={colors.white} />
-              </Pressable>
-            ))}
-          </View>
-        </SafeAreaView>
-      </View>
+      </SafeAreaView>
 
       <View style={styles.tray}>
         <ErrorBanner message={error} />
@@ -230,32 +225,38 @@ export default function CaptureScreen() {
             onRetry={() => failed.forEach((s) => void upload(s))}
           />
         ) : null}
-        <FlatList
-          horizontal
-          data={shots}
-          keyExtractor={(s) => String(s.index)}
-          contentContainerStyle={{ gap: space.sm }}
-          showsHorizontalScrollIndicator={false}
-          renderItem={({ item }) => (
-            <View style={styles.shot}>
-              <Image source={{ uri: item.uri }} style={styles.shotImage} />
-              <View style={[styles.shotStatus, item.status === 'error' && { backgroundColor: colors.danger }]}>
-                {item.status === 'uploading' ? (
-                  <Ionicons name="cloud-upload-outline" size={12} color={colors.white} />
-                ) : item.status === 'done' ? (
-                  <Ionicons name="checkmark" size={12} color={colors.white} />
-                ) : (
-                  <Ionicons name="alert" size={12} color={colors.white} />
-                )}
+        {shots.length ? (
+          <FlatList
+            horizontal
+            data={shots}
+            keyExtractor={(s) => String(s.index)}
+            contentContainerStyle={{ gap: space.sm }}
+            showsHorizontalScrollIndicator={false}
+            renderItem={({ item }) => (
+              <View style={styles.shot}>
+                <Image source={{ uri: item.uri }} style={styles.shotImage} />
+                <View
+                  style={[
+                    styles.shotStatus,
+                    item.status === 'error' && { backgroundColor: colors.danger },
+                    item.status === 'done' && { backgroundColor: colors.success },
+                  ]}>
+                  <Ionicons
+                    name={item.status === 'uploading' ? 'cloud-upload-outline' : item.status === 'done' ? 'checkmark' : 'alert'}
+                    size={11}
+                    color={colors.ink}
+                  />
+                </View>
+                <Text style={styles.shotIndex}>{item.index + 1}</Text>
               </View>
-              <Text style={styles.shotIndex}>{item.index + 1}</Text>
-            </View>
-          )}
-          ListEmptyComponent={<Text style={styles.trayHint}>Photos appear here and upload as you shoot.</Text>}
-        />
+            )}
+          />
+        ) : null}
         <View style={styles.controls}>
-          <Pressable onPress={discard} disabled={!shots.length} style={[styles.side, !shots.length && { opacity: 0.4 }]}>
-            <Ionicons name="trash-outline" size={24} color={colors.white} />
+          <Pressable onPress={discard} disabled={!shots.length} style={[styles.side, !shots.length && { opacity: 0.35 }]}>
+            <View style={styles.sideIcon}>
+              <Ionicons name="trash-outline" size={22} color={colors.white} />
+            </View>
             <Text style={styles.sideText}>Discard</Text>
           </Pressable>
           <Pressable
@@ -263,15 +264,24 @@ export default function CaptureScreen() {
             accessibilityLabel="Take photo"
             onPress={takePhoto}
             disabled={!cameraReady || taking}
-            style={({ pressed }) => [styles.shutter, (pressed || taking) && { transform: [{ scale: 0.94 }] }]}>
+            style={({ pressed }) => [styles.shutter, (pressed || taking) && { transform: [{ scale: 0.94 }] }, !cameraReady && { opacity: 0.5 }]}>
             <View style={styles.shutterInner} />
           </Pressable>
-          <Pressable onPress={finish} disabled={!canFinish} style={[styles.side, !canFinish && { opacity: 0.4 }]}>
-            <Ionicons name={finishing ? 'hourglass-outline' : 'checkmark-circle'} size={26} color={colors.white} />
+          <Pressable onPress={finish} disabled={!canFinish} style={[styles.side, !canFinish && { opacity: 0.35 }]}>
+            <View style={[styles.sideIcon, canFinish && { backgroundColor: colors.blue, borderColor: colors.blue }]}>
+              <Ionicons name={finishing ? 'hourglass-outline' : 'checkmark'} size={22} color={colors.white} />
+            </View>
             <Text style={styles.sideText}>{finishing ? 'Starting…' : 'Stitch'}</Text>
           </Pressable>
         </View>
       </View>
+
+      <CameraSettingsSheet
+        visible={settingsOpen}
+        settings={settings}
+        onChange={updateSettings}
+        onClose={() => setSettingsOpen(false)}
+      />
     </View>
   );
 }
@@ -279,8 +289,8 @@ export default function CaptureScreen() {
 type Size = { width: number; height: number };
 
 /** Where the guide strip sits on the preview: the edge you are moving away from. */
-function guideFrame(direction: Direction, { width, height }: Size) {
-  switch (direction) {
+function guideFrame(side: GuideSide, { width, height }: Size) {
+  switch (side) {
     case 'right':
       return { left: 0, top: 0, bottom: 0, width: width * OVERLAP_GUIDE };
     case 'left':
@@ -293,9 +303,9 @@ function guideFrame(direction: Direction, { width, height }: Size) {
 }
 
 /** The previous photo, shifted so only its edge nearest the new shot shows in the strip. */
-function guideImage(direction: Direction, { width, height }: Size) {
+function guideImage(side: GuideSide, { width, height }: Size) {
   const keep = 1 - OVERLAP_GUIDE;
-  switch (direction) {
+  switch (side) {
     case 'right':
       return { width, height, marginLeft: -width * keep };
     case 'down':
@@ -305,63 +315,90 @@ function guideImage(direction: Direction, { width, height }: Size) {
   }
 }
 
+/** A bright line on the strip's inner edge so the overlap boundary is easy to see. */
+function guideEdge(side: GuideSide) {
+  switch (side) {
+    case 'right':
+      return { right: 0, top: 0, bottom: 0, width: 2 };
+    case 'left':
+      return { left: 0, top: 0, bottom: 0, width: 2 };
+    case 'down':
+      return { left: 0, right: 0, bottom: 0, height: 2 };
+    default:
+      return { left: 0, right: 0, top: 0, height: 2 };
+  }
+}
+
 const styles = StyleSheet.create({
   dark: { flex: 1, backgroundColor: colors.ink },
   center: { alignItems: 'center', justifyContent: 'center', gap: space.lg, padding: space.xl },
-  permissionText: { color: colors.white, fontSize: 16, textAlign: 'center' },
-  preview: { flex: 1, overflow: 'hidden' },
-  guide: { position: 'absolute', overflow: 'hidden', opacity: 0.38 },
-  directions: { flexDirection: 'row', gap: space.sm, alignSelf: 'flex-start' },
-  badges: { flexDirection: 'row', gap: space.sm, flexWrap: 'wrap', alignItems: 'center' },
-  directionButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(11,18,32,0.6)',
-    borderWidth: 1.5,
-    borderColor: colors.blueBorder,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  directionActive: { backgroundColor: colors.blue, borderColor: colors.white },
-  topBar: { position: 'absolute', left: 0, right: 0, top: 0, padding: space.md, gap: space.sm },
+  permissionIcon: { width: 84, height: 84, borderRadius: 28, backgroundColor: colors.blueSoft, alignItems: 'center', justifyContent: 'center' },
+  permissionTitle: { color: colors.text, fontSize: 22, fontWeight: '800' },
+  permissionText: { color: colors.muted, fontSize: 15, textAlign: 'center', lineHeight: 21 },
+  guide: { position: 'absolute', overflow: 'hidden' },
+  guideEdge: { position: 'absolute', backgroundColor: '#FFD60A' },
+  topBar: { position: 'absolute', left: 0, right: 0, top: 0, paddingHorizontal: space.lg, paddingTop: space.sm, gap: space.sm },
+  topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   counter: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    alignSelf: 'flex-start',
-    backgroundColor: colors.blue,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    backgroundColor: colors.glass,
+    borderWidth: 1,
+    borderColor: colors.glassBorder,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: radius.pill,
   },
   counterText: { color: colors.white, fontWeight: '700', fontSize: 13 },
+  iconButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: colors.glass,
+    borderWidth: 1,
+    borderColor: colors.glassBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   tip: {
+    alignSelf: 'center',
     color: colors.white,
     fontSize: 13,
-    backgroundColor: 'rgba(11,18,32,0.6)',
-    padding: space.sm,
-    borderRadius: radius.sm,
+    backgroundColor: colors.glass,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
     overflow: 'hidden',
   },
-  tray: { padding: space.md, gap: space.md, borderTopWidth: 2, borderTopColor: colors.blue },
-  trayHint: { color: colors.muted, fontSize: 13, paddingVertical: 20 },
-  shot: { width: 64, height: 64, borderRadius: radius.sm, overflow: 'hidden', borderWidth: 2, borderColor: colors.blue },
+  tray: {
+    position: 'absolute',
+    left: space.md,
+    right: space.md,
+    bottom: space.md,
+    padding: space.lg,
+    gap: space.md,
+    borderRadius: 30,
+    backgroundColor: colors.glass,
+    borderWidth: 1,
+    borderColor: colors.glassBorder,
+  },
+  shot: { width: 56, height: 56, borderRadius: 14, overflow: 'hidden', borderWidth: 2, borderColor: colors.glassBorder },
   shotImage: { width: '100%', height: '100%' },
   shotStatus: {
     position: 'absolute',
-    right: 2,
-    top: 2,
+    right: 3,
+    top: 3,
     width: 18,
     height: 18,
     borderRadius: 9,
-    backgroundColor: colors.blue,
+    backgroundColor: colors.warning,
     alignItems: 'center',
     justifyContent: 'center',
   },
   shotIndex: {
     position: 'absolute',
-    left: 4,
+    left: 5,
     bottom: 2,
     color: colors.white,
     fontWeight: '800',
@@ -369,17 +406,27 @@ const styles = StyleSheet.create({
     textShadowColor: '#000',
     textShadowRadius: 3,
   },
-  controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: space.lg },
-  side: { width: 72, alignItems: 'center', gap: 4 },
-  sideText: { color: colors.white, fontSize: 12, fontWeight: '600' },
-  shutter: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
-    borderWidth: 4,
-    borderColor: colors.blue,
+  controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: space.sm },
+  side: { width: 68, alignItems: 'center', gap: 6 },
+  sideIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderWidth: 1,
+    borderColor: colors.glassBorder,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  shutterInner: { width: 58, height: 58, borderRadius: 29, backgroundColor: colors.white },
+  sideText: { color: colors.white, fontSize: 12, fontWeight: '600' },
+  shutter: {
+    width: 78,
+    height: 78,
+    borderRadius: 39,
+    borderWidth: 4,
+    borderColor: colors.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  shutterInner: { width: 60, height: 60, borderRadius: 30, backgroundColor: colors.white },
 });

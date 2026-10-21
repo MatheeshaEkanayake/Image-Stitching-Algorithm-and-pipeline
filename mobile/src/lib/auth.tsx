@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import { ApiError, createApi, normaliseServerUrl, type Api } from './api';
+import { DEFAULT_SERVER_URL } from './config';
 import type { UserRef } from './types';
 
 const KEYS = { server: 'server_url', token: 'session_token', user: 'session_user' } as const;
@@ -21,7 +22,7 @@ const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
-  const [serverUrl, setServerUrl] = useState('');
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<UserRef | null>(null);
 
