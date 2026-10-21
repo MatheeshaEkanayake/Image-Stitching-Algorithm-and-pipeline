@@ -95,12 +95,14 @@ class PanoramaStitcher:
             with stage("match"):
                 matches = self.matcher.match(images)
             with stage("homography"):
-                pairs = estimate_homographies(images, matches, config)
+                pairs, attempts = estimate_homographies(images, matches, config)
             report.pairs_tried = len(matches)
             report.pairs = [
                 PairStats(p.i, p.j, p.matches, p.inliers, round(p.inlier_ratio, 4)) for p in pairs
             ]
-            spanning_tree(pairs, len(images))  # fail early, naming the unconnected photos
+            # Fail early, naming the unconnected photos and the closest rejected candidate
+            # for each gap (see estimate_homographies for why a pair was rejected).
+            spanning_tree(pairs, len(images), attempts=attempts)
             with stage("canvas"):
                 projection = None
                 if config.projection in ("auto", "cylindrical"):

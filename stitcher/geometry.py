@@ -37,6 +37,22 @@ class PairResult:
         return self.inliers / self.matches if self.matches else 0.0
 
 
+@dataclass
+class PairAttempt:
+    """Diagnostic record of every candidate pair that was matched (0-based, ``i < j``).
+
+    Kept for every pair tried, accepted or not, so a "photos do not overlap" failure can
+    point at the closest near-miss instead of a bare claim.
+    """
+
+    i: int
+    j: int
+    matches: int
+    inliers: Optional[int]  # None if a homography could not even be estimated
+    accepted: bool
+    reason: str  # "accepted" or a human-readable reason it was rejected
+
+
 def image_corners(width: int, height: int) -> np.ndarray:
     """Corners of a ``width`` x ``height`` image as a (4, 2) float64 array, clockwise."""
     return np.array([[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float64)
@@ -99,16 +115,25 @@ def estimate_homographies(
     images: List[ImageData],
     matches_by_pair: Dict[Tuple[int, int], List[cv2.DMatch]],
     config: StitchConfig,
-) -> List[PairResult]:
+) -> Tuple[List[PairResult], List[PairAttempt]]:
     """Register every candidate pair that really overlaps.
 
     A pair that has too few matches or inliers, or whose homography is implausible, is simply
     not an overlapping pair and is skipped (most pairs of a grid capture do not overlap).
-    Whether the images are connected as a whole is checked by :func:`spanning_tree`.
+    Whether the images are connected as a whole is checked by :func:`spanning_tree`. Every
+    pair that was matched is also recorded as a :class:`PairAttempt`, accepted or not, so a
+    connectivity failure can point at the closest near-miss.
     """
     results: List[PairResult] = []
+    attempts: List[PairAttempt] = []
     for (i, j), matches in sorted(matches_by_pair.items()):
         if len(matches) < config.min_matches:
+            logger.info("Pair (%d, %d): only %d matches (need >= %d); not overlapping.",
+                        i, j, len(matches), config.min_matches)
+            attempts.append(PairAttempt(
+                i, j, len(matches), None, False,
+                f"only {len(matches)} matches, need at least {config.min_matches}",
+            ))
             continue
         kp_src, kp_dst = images[j].keypoints, images[i].keypoints
         assert kp_src is not None and kp_dst is not None
@@ -118,20 +143,34 @@ def estimate_homographies(
             points_src, points_dst, cv2.RANSAC, config.ransac_reproj_threshold
         )
         if homography is None or inlier_mask is None:
+            logger.info("Pair (%d, %d): RANSAC could not fit a homography to %d matches.",
+                        i, j, len(matches))
+            attempts.append(PairAttempt(
+                i, j, len(matches), None, False, "RANSAC could not fit a homography",
+            ))
             continue
         inliers = int(inlier_mask.sum())
         # Brown & Lowe's test: genuine overlaps have clearly more inliers than chance.
         if inliers < config.min_inliers or inliers < 5.9 + 0.22 * len(matches):
             logger.info("Pair (%d, %d): %d inliers of %d matches; not overlapping.",
                         i, j, inliers, len(matches))
+            attempts.append(PairAttempt(
+                i, j, len(matches), inliers, False,
+                f"only {inliers} of {len(matches)} matches agreed under RANSAC "
+                f"(need roughly {config.min_inliers}+ and a clear majority)",
+            ))
             continue
         height, width = images[j].image.shape[:2]
         problem = validate_homography(homography, width, height, config)
         if problem:
             logger.warning("Pair (%d, %d) ignored: implausible homography (%s).", i, j, problem)
+            attempts.append(PairAttempt(
+                i, j, len(matches), inliers, False, f"implausible homography: {problem}",
+            ))
             continue
         logger.info("Pair (%d, %d): RANSAC inliers %d/%d (%.1f%%)", i, j, inliers,
                     len(matches), 100 * inliers / len(matches))
+        attempts.append(PairAttempt(i, j, len(matches), inliers, True, "accepted"))
         keep = inlier_mask.ravel().astype(bool)
         results.append(
             PairResult(
@@ -140,14 +179,57 @@ def estimate_homographies(
                 points_dst[keep].reshape(-1, 2).astype(np.float64),
             )
         )
-    return results
+    return results, attempts
 
 
-def spanning_tree(pairs: Sequence[PairResult], image_count: int) -> List[PairResult]:
+def _describe_near_misses(
+    attempts: Sequence[PairAttempt], node_group: Dict[int, int]
+) -> List[str]:
+    """One line per gap between groups: its single strongest (still rejected) candidate pair.
+
+    Mirrors Kruskal's algorithm over ``attempts`` instead of accepted pairs, so it reports
+    exactly as many bridges as there are gaps to close, each the closest the photos came to
+    joining that pair of groups.
+    """
+    root = dict.fromkeys(set(node_group.values()))
+    for group in root:
+        root[group] = group
+
+    def find(group: int) -> int:
+        while root[group] != group:
+            root[group] = root[root[group]]
+            group = root[group]
+        return group
+
+    def rank(attempt: PairAttempt) -> Tuple[int, int]:
+        return (attempt.inliers if attempt.inliers is not None else -1, attempt.matches)
+
+    lines = []
+    for attempt in sorted(attempts, key=rank, reverse=True):
+        root_i, root_j = find(node_group[attempt.i]), find(node_group[attempt.j])
+        if root_i == root_j:
+            continue
+        root[root_i] = root_j
+        lines.append(
+            f"closest candidate between photo {attempt.i + 1} and photo {attempt.j + 1}: "
+            f"{attempt.matches} matching features"
+            + (f", {attempt.inliers} of them agreed" if attempt.inliers is not None else "")
+            + f" ({attempt.reason})."
+        )
+    return lines
+
+
+def spanning_tree(
+    pairs: Sequence[PairResult],
+    image_count: int,
+    attempts: Optional[Sequence[PairAttempt]] = None,
+) -> List[PairResult]:
     """Maximum spanning tree of the overlap graph (edge weight = RANSAC inliers).
 
     Raises StitchingError, naming the photos (1-based, as in the app), if some images cannot
-    be connected to the others through overlapping pairs.
+    be connected to the others through overlapping pairs. When ``attempts`` is given (every
+    candidate pair that was matched, see :func:`estimate_homographies`), the error also names
+    the closest rejected candidate for each gap, with the reason it was not accepted.
     """
     parent = list(range(image_count))
 
@@ -164,15 +246,21 @@ def spanning_tree(pairs: Sequence[PairResult], image_count: int) -> List[PairRes
             parent[root_i] = root_j
             tree.append(pair)
     if len(tree) != image_count - 1:
+        node_group = {node: find(node) for node in range(image_count)}
         groups: Dict[int, List[int]] = {}
-        for node in range(image_count):
-            groups.setdefault(find(node), []).append(node + 1)
+        for node, group in node_group.items():
+            groups.setdefault(group, []).append(node + 1)
         parts = " | ".join(", ".join(map(str, g)) for g in groups.values())
-        raise StitchingError(
+        message = (
             f"The photos split into groups that do not overlap each other (photo numbers: "
             f"{parts}). Each photo needs about a third of overlap with at least one other "
             "photo, and the whole set must be joined by overlaps; retake the missing shots."
         )
+        if attempts:
+            lines = _describe_near_misses(attempts, node_group)
+            if lines:
+                message += " " + " ".join(lines)
+        raise StitchingError(message)
     return tree
 
 

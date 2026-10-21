@@ -57,9 +57,25 @@ def current_user(request: Request) -> Dict[str, Any]:
     return {"id": row["id"], "username": row["username"]}
 
 
+def _configure_stitching_logs() -> None:
+    """Make the stitcher's own INFO/WARNING logs (pair matches, inliers, chosen model, ...)
+    show up in the server's output. Nothing configures this otherwise: uvicorn sets up its
+    own loggers, not "PanoramaStitcher", so these were silently dropped before this call
+    existed. Safe to call more than once (each create_app()); only attaches a handler once.
+    """
+    if logger.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False  # avoid double printing if the root logger also gets a handler
+
+
 def create_app(settings: Optional[ServerSettings] = None) -> FastAPI:
     from stitcher.server import routes_auth, routes_captures, routes_community
 
+    _configure_stitching_logs()
     settings = settings or ServerSettings.from_env()
     os.makedirs(settings.data_dir, exist_ok=True)
     store = JobStore(settings.data_dir)

@@ -15,6 +15,7 @@ from stitcher.blending import blend_images, crop_panorama, warp_images
 from stitcher.cli import main
 from stitcher.features import FeatureMatcher, candidate_pairs
 from stitcher.geometry import (
+    PairAttempt,
     PairResult,
     canvas_geometry,
     estimate_homographies,
@@ -23,7 +24,7 @@ from stitcher.geometry import (
     project_points,
     spanning_tree,
 )
-from stitcher.image_io import natural_sort_key
+from stitcher.image_io import load_images, natural_sort_key
 
 from .conftest import FRAME_H, FRAME_W
 
@@ -52,7 +53,7 @@ def test_pair_homography_recovery(frames_and_truth):
     config = StitchConfig()
     matcher = FeatureMatcher(config)
     matcher.detect(images)
-    pairs = estimate_homographies(images, matcher.match(images), config)
+    pairs, _ = estimate_homographies(images, matcher.match(images), config)
     found = {(p.i, p.j) for p in pairs}
     assert {(0, 1), (1, 2), (2, 3)} <= found  # neighbours overlap by ~46%
     for pair in pairs:
@@ -104,6 +105,42 @@ def test_spanning_tree_prefers_strong_pairs_and_names_unconnected_photos():
         spanning_tree([pair(0, 1, 50), pair(2, 3, 60)], 4)
     with pytest.raises(StitchingError, match=r"\| 3"):
         spanning_tree([pair(0, 1, 50)], 3)
+
+
+def test_spanning_tree_names_closest_rejected_candidate_per_gap():
+    """A real "no overlap" failure should point at the nearest-miss, not just say "no"."""
+    pairs = [PairResult(0, 1, np.eye(3), 60, 50)]
+    attempts = [
+        PairAttempt(0, 1, 60, 50, True, "accepted"),
+        # 1 and 2 almost overlapped: enough matches, too few RANSAC inliers.
+        PairAttempt(1, 2, 40, 6, False, "only 6 of 40 matches agreed under RANSAC"),
+        # 0 and 2 barely got any matches at all.
+        PairAttempt(0, 2, 3, None, False, "only 3 matches, need at least 10"),
+    ]
+    with pytest.raises(StitchingError) as excinfo:
+        spanning_tree(pairs, 3, attempts=attempts)
+    message = str(excinfo.value)
+    assert "photo numbers: 1, 2 | 3" in message
+    # names the stronger of the two candidate bridges (1-2), with its real numbers and reason
+    assert "photo 2 and photo 3" in message
+    assert "40 matching features" in message and "6 of them agreed" in message
+    assert "only 6 of 40 matches agreed under RANSAC" in message
+
+
+def test_estimate_homographies_records_rejected_attempts(frame_folder):
+    """Every tried pair is recorded, not just the ones that were accepted."""
+    images = load_images(frame_folder, StitchConfig())
+    matcher = FeatureMatcher(StitchConfig())
+    matcher.detect(images)
+    unrelated = {(0, len(images) - 1): []}  # a pair with zero matches, forced in
+    matches = matcher.match(images)
+    matches.update(unrelated)
+    _, attempts = estimate_homographies(images, matches, StitchConfig())
+    by_pair = {(a.i, a.j): a for a in attempts}
+    assert set(by_pair) == set(matches)
+    rejected = by_pair[(0, len(images) - 1)]
+    assert rejected.accepted is False and "need at least" in rejected.reason
+    assert any(a.accepted for a in attempts)  # the real neighbours still overlap
 
 
 def test_candidate_pairs_modes():
@@ -344,7 +381,7 @@ def test_bundle_adjustment_reduces_reprojection_error(rotation_folder):
     config = StitchConfig()
     matcher = FeatureMatcher(config)
     matcher.detect(images)
-    pairs = estimate_homographies(images, matcher.match(images), config)
+    pairs, _ = estimate_homographies(images, matcher.match(images), config)
     refined = CylindricalProjection(images, pairs, config)
     plain = CylindricalProjection(images, pairs, StitchConfig(bundle_adjust=False))
     from .conftest import ROT_FOCAL
