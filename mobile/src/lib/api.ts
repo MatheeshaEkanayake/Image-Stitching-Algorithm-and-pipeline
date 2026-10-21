@@ -1,3 +1,5 @@
+import { File, UploadType } from 'expo-file-system';
+
 import type { Capture, Comment, Post, Profile, Session } from './types';
 
 /** Error with the server's message (the server answers errors as {"error": "..."}). */
@@ -66,25 +68,36 @@ export function createApi(baseUrl: string, token: string | null) {
       request<Capture>('PATCH', `/captures/${id}`, changes),
     deleteCapture: (id: string) => request<void>('DELETE', `/captures/${id}`),
 
-    /** Upload one photo the moment it is taken. Re-sending the same index replaces it. */
+    /**
+     * Upload one photo the moment it is taken. Re-sending the same index replaces it.
+     * Uses expo-file-system's native multipart upload, which streams the file from disk
+     * (React Native's FormData `{uri}` trick is not reliable on current Expo SDKs).
+     */
     async uploadPhoto(id: string, index: number, uri: string): Promise<{ photo_count: number }> {
-      const form = new FormData();
-      form.append('index', String(index));
-      // React Native's FormData accepts a {uri, name, type} file descriptor.
-      form.append('file', { uri, name: `photo-${index}.jpg`, type: 'image/jpeg' } as unknown as Blob);
-      let response: Response;
+      let result;
       try {
-        response = await fetch(`${baseUrl}/captures/${id}/photos`, {
-          method: 'POST',
+        result = await new File(uri).upload(`${baseUrl}/captures/${id}/photos`, {
+          httpMethod: 'POST',
+          uploadType: UploadType.MULTIPART,
+          fieldName: 'file',
+          mimeType: 'image/jpeg',
+          parameters: { index: String(index) },
           headers: authHeaders(),
-          body: form,
         });
-      } catch {
-        throw new ApiError('Upload failed: no connection to the server.', 0);
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        throw new ApiError(`Upload failed: ${reason}`, 0);
       }
-      const data = await response.json().catch(() => null);
-      if (!response.ok) throw new ApiError(data?.error ?? `Upload failed (${response.status})`, response.status);
-      return data;
+      let data: { photo_count?: number; error?: string } | null = null;
+      try {
+        data = JSON.parse(result.body);
+      } catch {
+        // non-JSON body; fall through to the status check
+      }
+      if (result.status < 200 || result.status >= 300) {
+        throw new ApiError(data?.error ?? `Upload failed (HTTP ${result.status})`, result.status);
+      }
+      return { photo_count: data?.photo_count ?? 0 };
     },
 
     thumbUrl: (id: string) => `${baseUrl}/captures/${id}/thumb.jpg`,
