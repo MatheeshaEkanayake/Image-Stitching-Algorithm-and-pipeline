@@ -1,10 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { router, useIsFocused } from 'expo-router';
-import { useCallback, useRef, useState, type ComponentProps } from 'react';
+import * as SecureStore from 'expo-secure-store';
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import { Alert, FlatList, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { CameraGrid, LevelBadge, useLevel } from '@/components/camera-overlays';
 import { Button, ErrorBanner } from '@/components/ui';
 import { errorMessage, useAuth } from '@/lib/auth';
 import { colors, radius, space } from '@/lib/theme';
@@ -12,7 +14,10 @@ import { colors, radius, space } from '@/lib/theme';
 type Shot = { index: number; uri: string; status: 'uploading' | 'done' | 'error'; error?: string };
 
 const MAX_ATTEMPTS = 3;
-const OVERLAP_GUIDE = 0.3; // how much of the previous photo is shown as an alignment guide
+// How much of the previous photo is shown as an alignment guide: one third, so the guide's
+// edge sits on a grid line and the recommended overlap is easy to judge.
+const OVERLAP_GUIDE = 1 / 3;
+const GRID_PREF = 'camera_grid';
 
 /** Direction you are moving the camera next; the guide shows the previous photo's overlap edge. */
 type Direction = 'right' | 'left' | 'down' | 'up' | 'off';
@@ -36,6 +41,21 @@ export default function CaptureScreen() {
   const [error, setError] = useState<string | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [direction, setDirection] = useState<Direction>('right');
+  const [gridOn, setGridOn] = useState(true);
+  const level = useLevel(focused && gridOn);
+
+  useEffect(() => {
+    SecureStore.getItemAsync(GRID_PREF).then(
+      (value) => value !== null && setGridOn(value === '1'),
+      () => undefined,
+    );
+  }, []);
+
+  function toggleGrid() {
+    const next = !gridOn;
+    setGridOn(next);
+    SecureStore.setItemAsync(GRID_PREF, next ? '1' : '0').catch(() => undefined);
+  }
   // One capture per session; created lazily on the first shot. A promise so that quick
   // successive shots all wait for the same capture instead of creating several.
   const captureId = useRef<Promise<string> | null>(null);
@@ -155,6 +175,7 @@ export default function CaptureScreen() {
             onMountError={(e) => setError(e.message)}
           />
         ) : null}
+        {gridOn ? <CameraGrid /> : null}
         {last && direction !== 'off' && size.width > 0 ? (
           // Ghost of the previous photo's edge on the side you are coming from: line it up with
           // the same part of the scene in the new shot. Works for rows, columns and snakes.
@@ -163,18 +184,29 @@ export default function CaptureScreen() {
           </View>
         ) : null}
         <SafeAreaView edges={['top']} style={styles.topBar}>
-          <View style={styles.counter}>
-            <Ionicons name="images" size={14} color={colors.white} />
-            <Text style={styles.counterText}>
-              {shots.length} taken · {uploaded} uploaded
-            </Text>
+          <View style={styles.badges}>
+            <View style={styles.counter}>
+              <Ionicons name="images" size={14} color={colors.white} />
+              <Text style={styles.counterText}>
+                {shots.length} taken · {uploaded} uploaded
+              </Text>
+            </View>
+            <LevelBadge level={level} />
           </View>
           <Text style={styles.tip}>
             {shots.length === 0
-              ? 'Start anywhere and cover the whole subject in rows, columns or a snake, in any order. Overlap each shot with its neighbours by about a third. Keep the phone parallel to flat things like boards.'
+              ? 'Start anywhere and cover the whole subject in rows, columns or a snake, in any order. Overlap each shot with its neighbours by about a third. Tap the grid button to show the grid and level; for flat things like boards, keep the phone parallel until the badge turns green.'
               : 'Line the faint ghost up with the same part of the scene, then shoot. Pick the arrow for the way you move next.'}
           </Text>
           <View style={styles.directions}>
+            <Pressable
+              accessibilityRole="switch"
+              accessibilityLabel="Grid and level"
+              accessibilityState={{ checked: gridOn }}
+              onPress={toggleGrid}
+              style={[styles.directionButton, gridOn && styles.directionActive, { marginRight: space.sm }]}>
+              <Ionicons name="grid-outline" size={20} color={colors.white} />
+            </Pressable>
             {DIRECTIONS.map((d) => (
               <Pressable
                 key={d.key}
@@ -280,6 +312,7 @@ const styles = StyleSheet.create({
   preview: { flex: 1, overflow: 'hidden' },
   guide: { position: 'absolute', overflow: 'hidden', opacity: 0.38 },
   directions: { flexDirection: 'row', gap: space.sm, alignSelf: 'flex-start' },
+  badges: { flexDirection: 'row', gap: space.sm, flexWrap: 'wrap', alignItems: 'center' },
   directionButton: {
     width: 40,
     height: 40,

@@ -4,7 +4,9 @@ React Native (Expo SDK 57, Expo Router) client for the stitching server in `../s
 
 - **Capture**: take overlapping photos in any order (rows, columns, a snake; right to left is fine); each one uploads in the background the
   moment it is taken (with retries). An arrow picker sets the direction you move next, and a ghost of the previous photo's edge on that side helps you line up
-  the next shot. Tap **Stitch** when all photos are uploaded.
+  the next shot. The grid button shows an iPhone-style 3x3 grid and a level badge that turns
+  green when the phone is straight (upright) or flat (shooting down at a table). Tap **Stitch**
+  when all photos are uploaded.
 - **Library**: your own captures (private by default) with live status while the server stitches.
 - **Zoom viewer**: deep-zoom tiles (only the visible tiles are downloaded) and **Full detail**,
   which fetches native-resolution pixels of the current view.
