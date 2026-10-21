@@ -11,7 +11,7 @@ import numpy as np
 
 BLEND_MODES: Tuple[str, ...] = ("multiband", "feather")
 DETECTORS: Tuple[str, ...] = ("SIFT", "ORB")
-PROJECTIONS: Tuple[str, ...] = ("cylindrical", "planar")
+PROJECTIONS: Tuple[str, ...] = ("auto", "cylindrical", "planar")
 
 
 class StitchingError(Exception):
@@ -27,7 +27,8 @@ class StitchConfig:
     min_matches: int = 10
     min_inliers: int = 15
     max_area_ratio: float = 10.0
-    projection: str = "cylindrical"
+    projection: str = "auto"
+    max_rotation_fit_px: float = 5.0
     focal_length: float = 0.0
     bundle_adjust: bool = True
     blend_mode: str = "multiband"
@@ -78,6 +79,7 @@ class StitchReport:
     detector: str = ""
     keypoints: List[int] = field(default_factory=list)
     pairs: List[PairStats] = field(default_factory=list)
+    projection: str = ""  # model actually used ("cylindrical" or "planar")
     reference_index: int = 0
     focal_length: Optional[float] = None  # pixels; cylindrical projection only
     canvas_size: Tuple[int, int] = (0, 0)  # (width, height)

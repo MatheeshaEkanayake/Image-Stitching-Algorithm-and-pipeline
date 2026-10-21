@@ -96,19 +96,35 @@ class PanoramaStitcher:
             ]
             homographies = [p.homography for p in pairs]
             with stage("canvas"):
-                if config.projection == "cylindrical":
+                projection = None
+                if config.projection in ("auto", "cylindrical"):
                     projection = CylindricalProjection(images, pairs, config)
+                    if (
+                        config.projection == "auto"
+                        and projection.fit_error is not None
+                        and projection.fit_error > config.max_rotation_fit_px
+                    ):
+                        logger.warning(
+                            "The photos do not fit a rotating camera (worst pair error %.1f px "
+                            "> %.1f px), so the camera probably moved, as when photographing a "
+                            "flat board or document. Using the planar model instead.",
+                            projection.fit_error, config.max_rotation_fit_px,
+                        )
+                        projection = None
+                if projection is not None:
                     reference, canvas_size = projection.reference, projection.canvas_size
                     report.focal_length = round(projection.focal, 2)
                 else:
                     transforms, reference = global_transforms(homographies, len(images))
                     canvas_size, translation = canvas_geometry(images, transforms, config)
+                report.projection = "cylindrical" if projection is not None else "planar"
+                logger.info("Projection: %s", report.projection)
             report.reference_index = reference
             logger.info("Reference image: [%d]", reference)
             report.canvas_size = canvas_size
             report.canvas_megapixels = round(canvas_size[0] * canvas_size[1] / 1e6, 3)
             with stage("warp_blend"):
-                if config.projection == "cylindrical":
+                if projection is not None:
                     warped = projection.warp_images(images, config)
                 else:
                     warped = warp_images(images, transforms, translation, canvas_size, config)

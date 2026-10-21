@@ -30,7 +30,7 @@ class JobOptions:
     """Subset of StitchConfig that clients may set."""
 
     max_image_dimension: int = 0
-    projection: str = "cylindrical"
+    projection: str = "auto"
     blend_mode: str = "multiband"
     detector: str = "SIFT"
     tile_size: int = 512

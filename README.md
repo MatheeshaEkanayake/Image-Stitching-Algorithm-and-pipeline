@@ -62,7 +62,7 @@ print(report.to_json())
 | `--min-matches` | `10` | Minimum good matches per adjacent pair |
 | `--min-inliers` | `15` | Minimum RANSAC inliers per adjacent pair |
 | `--max-area-ratio` | `10.0` | Reject a pair homography that scales an image's area by more than this factor (or its inverse) |
-| `--projection {cylindrical,planar}` | `cylindrical` | `cylindrical` treats the photos as a rotating camera and removes the stretching of the planar chain; `planar` is the original homography chain (kept for baseline comparison and flat scenes) |
+| `--projection {auto,cylindrical,planar}` | `auto` | `auto` tries the rotating-camera model and falls back to planar when the photos do not fit it (worst pair error above 5 px, e.g. a moved camera). `cylindrical`: wide panoramas from a camera turning on the spot. `planar`: flat targets such as whiteboards, posters and documents |
 | `--focal` | `0` (estimate) | Focal length in pixels for the cylindrical projection |
 | `--blend-mode {multiband,feather}` | `multiband` | `multiband`: exposure compensation, graph-cut seams and Laplacian-pyramid blending (removes ghosting). `feather`: distance-weighted averaging. Canvases above 40 MP fall back to feather automatically |
 | `--feather-width` | `50` | Feather ramp width in px (`0` = unclipped distance weighting) |

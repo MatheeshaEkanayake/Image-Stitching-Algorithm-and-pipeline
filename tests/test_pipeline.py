@@ -183,7 +183,8 @@ def test_report_schema(frame_folder):
     )
     data = json.loads(report.to_json())
     expected_keys = {
-        "image_names", "image_sizes", "detector", "keypoints", "pairs", "reference_index",
+        "image_names", "image_sizes", "detector", "keypoints", "pairs", "projection",
+        "reference_index",
         "focal_length", "canvas_size", "canvas_megapixels", "output_size", "timings_s",
         "peak_memory_mb", "config",
     }
@@ -364,9 +365,9 @@ def test_bundle_adjustment_recovers_pair_with_large_initial_error():
     # camera 0 starts ~5 degrees off in pitch/yaw/roll, i.e. well beyond the final 5 px threshold
     off = cv2.Rodrigues(np.deg2rad([5.0, 4.0, 3.0]))[0]
     start = [off @ true[0], true[1], true[2]]
-    refined, _ = refine_cameras(pairs, start, 1, f, sizes, fix_focal=True)
+    refined, _, worst = refine_cameras(pairs, start, 1, f, sizes, fix_focal=True)
     error = np.degrees(np.linalg.norm(cv2.Rodrigues(refined[0] @ true[0].T)[0]))
-    assert error < 0.1
+    assert error < 0.1 and worst < 0.1
 
 
 def test_cli_writes_lossless_tiff(frame_folder, tmp_path):
@@ -382,3 +383,25 @@ def test_cli_writes_lossless_tiff(frame_folder, tmp_path):
 
 def test_default_multiband_limit_covers_native_resolution_sets():
     assert StitchConfig().multiband_max_megapixels >= 40
+
+
+def test_auto_projection_uses_cylindrical_for_a_rotating_camera(rotation_folder):
+    _, report = PanoramaStitcher(StitchConfig()).stitch_with_report(rotation_folder)
+    assert StitchConfig().projection == "auto"
+    assert report.projection == "cylindrical" and report.focal_length is not None
+
+
+def test_auto_projection_falls_back_to_planar_for_a_flat_target(frame_folder, caplog):
+    """The planar test frames are cut from a flat scene by homographies (not a pure rotation)."""
+    with caplog.at_level("WARNING"):
+        panorama, report = PanoramaStitcher(StitchConfig()).stitch_with_report(frame_folder)
+    assert report.projection == "planar" and report.focal_length is None
+    assert "Using the planar model" in caplog.text
+    assert panorama.shape[1] > FRAME_W * 2
+
+
+def test_explicit_projection_is_respected(rotation_folder):
+    _, report = PanoramaStitcher(StitchConfig(projection="planar")).stitch_with_report(
+        rotation_folder
+    )
+    assert report.projection == "planar"

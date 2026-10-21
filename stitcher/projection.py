@@ -9,7 +9,7 @@ is resampled onto a cylinder around the reference camera's vertical axis.
 from __future__ import annotations
 
 import logging
-from typing import Iterator, List, Sequence, Tuple
+from typing import Iterator, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -92,14 +92,16 @@ def refine_cameras(
     sizes: Sequence[Tuple[int, int]],
     iterations: int = 40,
     fix_focal: bool = False,
-) -> Tuple[List[np.ndarray], float]:
+) -> Tuple[List[np.ndarray], float, float]:
     """Jointly refine all rotations and one shared focal length (bundle adjustment).
 
     Minimises the pixel reprojection error of every RANSAC inlier between adjacent images
     with Levenberg-Marquardt. ``rotations[i]`` maps camera i onto the reference camera.
-    ``fix_focal`` keeps the focal length constant. Returns the refined rotations and focal
-    length, or the inputs if refinement does not improve the error or drives the focal length
-    out of a plausible range.
+    ``fix_focal`` keeps the focal length constant. Returns the refined rotations, the focal
+    length and the worst per-pair median error in pixels (``inf`` if refinement did not help):
+    a large value means the images are not a pure camera rotation. If refinement does not
+    improve the error or drives the focal length out of a plausible range, the inputs are
+    returned instead.
     """
     count = len(rotations)
     free = [i for i in range(count) if i != reference]
@@ -180,14 +182,16 @@ def refine_cameras(
     if not (0.25 * longest <= f <= 8 * longest) or robust_cost(r, _FINAL_SCALE) >= start_cost:
         logger.warning("Bundle adjustment did not help (median error %.2f -> %.2f px); keeping "
                        "the initial cameras.", start_med, end_med)
-        return list(rotations), focal
+        return list(rotations), focal, float("inf")
     logger.info("Bundle adjustment: median error %.2f -> %.2f px, focal %.1f -> %.1f px",
                 start_med, end_med, focal, f)
     offset = 0
+    worst = 0.0
     for pair in pairs:
         count = 2 * len(pair.points_src)
         pair_med = float(np.median(np.abs(r[offset:offset + count])))
         offset += count
+        worst = max(worst, pair_med)
         if pair_med > 5.0:
             logger.warning(
                 "Images %d and %d do not fit a rotating-camera model (median error %.1f px "
@@ -195,7 +199,7 @@ def refine_cameras(
                 "camera translation/parallax or a different tilt.",
                 pair.index, pair.index + 1, pair_med,
             )
-    return rots, f
+    return rots, f, worst
 
 
 class CylindricalProjection:
@@ -215,10 +219,11 @@ class CylindricalProjection:
             self.focal = estimate_focal(homographies, self.sizes)
         logger.info("Focal length: %.1f px (%s)", self.focal,
                     "given" if config.focal_length > 0 else "estimated")
+        self.fit_error: Optional[float] = None  # worst per-pair error after adjustment (px)
         pair_rotations = pairwise_rotations(homographies, self.focal, self.sizes)
         self.rotations, self.reference = global_transforms(pair_rotations, len(images))
         if config.bundle_adjust:
-            self.rotations, refined = refine_cameras(
+            self.rotations, refined, self.fit_error = refine_cameras(
                 pairs, self.rotations, self.reference, self.focal, self.sizes,
                 fix_focal=config.focal_length > 0,
             )

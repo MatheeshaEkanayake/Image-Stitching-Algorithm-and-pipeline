@@ -40,7 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--feather-width", type=int, default=defaults.feather_width,
                         help="Feather ramp width in pixels (0 = unclipped).")
     parser.add_argument("--projection", choices=list(PROJECTIONS), default=defaults.projection,
-                        help="cylindrical (rotating camera, default) or planar homography chain.")
+                        help="auto (default): cylindrical if the photos fit a rotating "
+                             "camera, else planar; cylindrical: rotating camera (panoramas); "
+                             "planar: flat targets such as boards, posters, documents.")
     parser.add_argument("--focal", type=float, default=defaults.focal_length,
                         help="Focal length in pixels for cylindrical projection (0 = estimate).")
     parser.add_argument("--blend-mode", choices=list(BLEND_MODES), default=defaults.blend_mode)
